@@ -8,16 +8,21 @@ This standalone script supports four scan variables:
     energy-fwhm    scan Gaussian alpha-energy FWHM;
     threshold      scan the per-alpha measured-energy threshold.
 
-Common analysis conditions:
+Study modes:
+    matched       scan the SAME response in independent data and templates;
+    calibration   keep data response/events fixed, scan template response;
+    legacy        scan data, select template components using the old flags.
+
+Common analysis conditions (legacy angle conventions described below):
     - full laboratory angular coverage;
     - exactly N_fit=100000 accepted complete three-alpha events by default;
     - pure benchmark directions reconstructed from momentum;
-    - pure benchmark templates always retain continuous true angles:
-      Delta-theta-template = Delta-phi-template = 0;
+    - legacy benchmark templates retain true angles unless enabled by a flag;
     - mixed closure directions reconstructed from virtual-sphere hit position
       relative to the nominal sphere centre;
-    - scanned/fixed angular granularity applied only to the mixed closure;
-    - energy smearing and threshold applied only to the mixed closure sample;
+    - matched/calibration always use sphere-position directions for BOTH
+      data and templates, including the zero-granularity reference;
+    - response-dependent channel efficiencies accompany template shapes;
     - three reconstructed alpha four-vectors boosted into their common CM;
     - CM kinetic energies ordered as E_H >= E_M >= E_L;
     - original energy-ordered Dalitz coordinates used in the Bayesian fit.
@@ -29,13 +34,14 @@ This reduces artificial point-to-point fluctuations.
 Output:
     one three-row fitted-fraction figure with marginal 95% credible intervals.
 
-Dependencies:
-    python3 -m pip install --user numpy matplotlib uproot
+Intervals condition on the finite template histograms: they do not include
+template Monte Carlo uncertainty or constitute repeated-experiment coverage.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -84,7 +90,7 @@ SPHERE_BRANCHES = (
     "generator_particle_index",
 )
 
-SCRIPT_VERSION = "2026-07-20-v13-tight-stacked-left-labels"
+SCRIPT_VERSION = "2026-10-16-v14-separated-response-studies"
 
 SPHERE_POSITION_BRANCHES = (
     "x_mm",
@@ -126,7 +132,7 @@ def require_branches(
 
 
 def load_reaction_event_ids(root_path: Path) -> np.ndarray:
-    with uproot.open(root_path) as root_file:
+    with uproot.open(root_path, handler=uproot.source.file.MemmapSource) as root_file:
         tree = require_tree(root_file, "reaction")
         available = branch_names(tree)
         if "event" in available:
@@ -144,7 +150,7 @@ def load_reaction_event_ids(root_path: Path) -> np.ndarray:
 
 
 def load_reaction_channels(root_path: Path) -> np.ndarray:
-    with uproot.open(root_path) as root_file:
+    with uproot.open(root_path, handler=uproot.source.file.MemmapSource) as root_file:
         tree = require_tree(root_file, "reaction")
         if "h11b_reaction_channel" not in branch_names(tree):
             raise RuntimeError(
@@ -166,17 +172,24 @@ def load_complete_three_alpha(
     if load_hit_position:
         requested_branches.extend(SPHERE_POSITION_BRANCHES)
 
-    with uproot.open(root_path) as root_file:
+    with uproot.open(root_path, handler=uproot.source.file.MemmapSource) as root_file:
         tree = require_tree(root_file, "virtual_sphere")
         require_branches(
             tree,
             tuple(requested_branches),
             "virtual_sphere",
         )
-        data = tree.arrays(
-            tuple(requested_branches),
-            library="np",
-        )
+        columns = {name: [] for name in requested_branches}
+        for chunk in tree.iterate(requested_branches, step_size=200000, library="np"):
+            keep = ((chunk["pdg"] == ALPHA_PDG)
+                    & (chunk["h11b_particle_source"] == SOURCE_H11B_REACTION_PRODUCT)
+                    & (chunk["generator_particle_index"] >= 0)
+                    & (chunk["generator_particle_index"] <= 2))
+            for name in requested_branches:
+                columns[name].append(chunk[name][keep])
+        data = {name: np.concatenate(parts) if parts else np.array([])
+                for name, parts in columns.items()}
+        del columns
 
     selected = (
         (np.asarray(data["pdg"]) == ALPHA_PDG)
@@ -1225,6 +1238,77 @@ def response_parameters(
     return theta, phi, fwhm, threshold
 
 
+RESPONSE_NAMES = ("theta", "phi", "energy-fwhm", "threshold")
+
+
+def nominal_response(args: argparse.Namespace) -> tuple[float, ...]:
+    return (float(args.fixed_theta_deg), float(args.fixed_phi_deg),
+            float(args.fixed_energy_fwhm_keV), float(args.fixed_threshold_keV))
+
+
+def response_pair(args: argparse.Namespace, value: float) -> tuple[tuple, tuple]:
+    """Resolve data/template parameters independently, in documented order."""
+    nominal = nominal_response(args)
+    varied = response_parameters(args.scan, value, *nominal)
+    if args.study == "matched":
+        return varied, varied
+    if args.study == "calibration":
+        return nominal, varied
+    if args.study == "legacy":
+        template = (varied[0] if args.apply_angular_granularity_to_benchmark else 0.0,
+                    varied[1] if args.apply_angular_granularity_to_benchmark else 0.0,
+                    varied[2] if args.apply_energy_smearing_to_benchmark else 0.0,
+                    varied[3] if args.apply_threshold_to_benchmark else 0.0)
+        return varied, template
+    raise ValueError(f"Unknown study mode: {args.study}")
+
+
+def response_efficiencies(histograms: np.ndarray, generated_counts: np.ndarray) -> np.ndarray:
+    """Include complete-event quality and ALL subsequent response selections."""
+    counts = np.sum(histograms, axis=(1, 2))
+    generated = np.asarray(generated_counts, dtype=float)
+    if (generated.shape != (3,) or np.any(generated <= 0)
+            or np.any(~np.isfinite(counts)) or np.any(counts <= 0)
+            or np.any(counts > generated)):
+        raise ValueError("Every template channel needs 0 < accepted <= generated events")
+    return counts / generated
+
+
+def load_response_inputs(seq_be_gs, seq_be2plus, direct, mixed,
+                         mass_shell_tolerance=1.0e-4) -> dict[str, Any]:
+    """Read independent archived samples once for several sequential scans.
+
+    Only needed branches are loaded. The returned arrays are read-only inputs
+    by convention; reconstruction functions produce their own arrays.
+    """
+    paths = tuple(Path(p).resolve() for p in (seq_be_gs, seq_be2plus, direct, mixed))
+    samples, reaction_ids, reaction_channels, runinfo = [], [], [], []
+    for index, path in enumerate(paths):
+        raw = load_complete_three_alpha(path, load_hit_position=True)
+        accepted = apply_mask(raw, quality_mask(raw["kinetic"], raw["momentum"],
+                                               mass_shell_tolerance))
+        ids = load_reaction_event_ids(path)
+        channels = load_reaction_channels(path)
+        prepare_reaction_channel_lookup(ids, channels)  # also rejects duplicate IDs
+        if index < 3 and not np.all(channels == CHANNEL_IDS[index]):
+            raise ValueError(f"{path}: benchmark is not a pure {CHANNEL_KEYS[index]} sample")
+        if np.any(~np.isin(channels, CHANNEL_IDS)):
+            raise ValueError(f"{path}: channels outside the fitted 162-keV model")
+        with uproot.open(path, handler=uproot.source.file.MemmapSource) as root_file:
+            info = (root_file["RunInfo"].arrays(library="np")
+                    if "RunInfo" in root_file else {})
+        samples.append(accepted)
+        reaction_ids.append(ids)
+        reaction_channels.append(channels)
+        runinfo.append({k: v.tolist() for k, v in info.items()})
+        print(f"Loaded {path.name}: reaction={ids.size:,}, complete/quality={accepted['event_id'].size:,}")
+    return {"paths": paths, "mass_shell_tolerance": float(mass_shell_tolerance),
+            "pure_events": samples[:3], "mixed_events": samples[3],
+            "pure_generated_counts": np.array([a.size for a in reaction_ids[:3]]),
+            "reaction_event_ids": reaction_ids[3], "reaction_channels": reaction_channels[3],
+            "runinfo": runinfo}
+
+
 def default_scan_values(scan_name: str) -> np.ndarray:
     if scan_name == "theta":
         return np.asarray(
@@ -1480,6 +1564,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         help="mixed closure ROOT file",
     )
     parser.add_argument(
+        "--study", choices=("legacy", "matched", "calibration"), default="legacy",
+        help=("matched: scan identical data/template response; calibration: fix data at "
+              "--fixed-* settings and vary only the template parameter; legacy: retain "
+              "the separate template-response switches. Default: legacy."),
+    )
+    parser.add_argument(
         "--scan",
         choices=(
             "theta",
@@ -1497,8 +1587,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         default=None,
         metavar="VALUE",
         help=(
-            "explicit scan values. When omitted, parameter-specific "
-            "default values are used"
+            "explicit response values: common values in matched mode, template "
+            "values in calibration mode, data values in legacy mode"
         ),
     )
 
@@ -1507,8 +1597,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=float,
         default=0.0,
         help=(
-            "fixed theta granularity when another parameter is scanned "
-            "(default: 0 deg)"
+            "data theta granularity in calibration mode, or unscanned theta "
+            "granularity otherwise (default: 0 deg)"
         ),
     )
     parser.add_argument(
@@ -1516,8 +1606,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=float,
         default=0.0,
         help=(
-            "fixed phi granularity when another parameter is scanned "
-            "(default: 0 deg)"
+            "data phi granularity in calibration mode, or unscanned phi "
+            "granularity otherwise (default: 0 deg)"
         ),
     )
     parser.add_argument(
@@ -1525,7 +1615,7 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=float,
         default=0.0,
         help=(
-            "fixed closure energy FWHM when another parameter is scanned "
+            "data energy FWHM in calibration mode, or unscanned FWHM otherwise "
             "(default: 0 keV)"
         ),
     )
@@ -1534,8 +1624,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         type=float,
         default=0.0,
         help=(
-            "fixed closure per-alpha threshold when another parameter is "
-            "scanned (default: 0 keV)"
+            "data threshold in calibration mode, or unscanned per-alpha "
+            "threshold otherwise (default: 0 keV)"
         ),
     )
 
@@ -1696,6 +1786,8 @@ def parse_args(argv=None) -> argparse.Namespace:
 
 
 def validate_args(args: argparse.Namespace) -> np.ndarray:
+    if args.study not in ("legacy", "matched", "calibration"):
+        raise ValueError("--study must be legacy, matched or calibration")
     for path in (
         args.seq_be_gs,
         args.seq_be2plus,
@@ -1781,6 +1873,12 @@ def validate_args(args: argparse.Namespace) -> np.ndarray:
         raise ValueError(
             "--template-pseudocount must be positive"
         )
+    if not np.isfinite(args.local_sigma_span) or args.local_sigma_span <= 0:
+        raise ValueError("--local-sigma-span must be finite and positive")
+    if not np.all(np.isfinite([args.theta_offset_deg, args.phi_offset_deg,
+                              args.sphere_center_x_mm, args.sphere_center_y_mm,
+                              args.sphere_center_z_mm])):
+        raise ValueError("Angular offsets and the sphere centre must be finite")
     return values
 
 
@@ -1788,524 +1886,207 @@ def validate_args(args: argparse.Namespace) -> np.ndarray:
 # Main
 # ---------------------------------------------------------------------------
 
-def _run(args, save=False, outdir="."):
-    print(f"Script version: {SCRIPT_VERSION}")
+def _run(args, save=False, outdir=".", prepared_inputs=None):
+    """Run one explicitly identified study; no ROOT data or metadata are written."""
     values = validate_args(args)
     configure_plot_style()
+    print(f"Script version: {SCRIPT_VERSION}; study={args.study}; scan={args.scan}")
+    paths = tuple(Path(p).resolve() for p in
+                  (args.seq_be_gs, args.seq_be2plus, args.direct, args.mixed))
+    if prepared_inputs is None:
+        prepared_inputs = load_response_inputs(*paths, args.mass_shell_tolerance)
+    if (tuple(prepared_inputs["paths"]) != paths
+            or prepared_inputs["mass_shell_tolerance"] != args.mass_shell_tolerance):
+        raise ValueError("Prepared samples do not match the requested files/quality settings")
+    pure_events = prepared_inputs["pure_events"]
+    pure_generated = prepared_inputs["pure_generated_counts"]
+    mixed_events = prepared_inputs["mixed_events"]
+    reaction_event_ids = prepared_inputs["reaction_event_ids"]
+    reaction_channels = prepared_inputs["reaction_channels"]
+    sorted_ids, sorted_channels = prepare_reaction_channel_lookup(reaction_event_ids, reaction_channels)
+    full_file_counts = np.array([np.count_nonzero(reaction_channels == c) for c in CHANNEL_IDS])
+    full_file_truth = full_file_counts / full_file_counts.sum()
+    sphere_center_mm = np.array([args.sphere_center_x_mm, args.sphere_center_y_mm,
+                                 args.sphere_center_z_mm], dtype=float)
+    limits = (-float(args.dalitz_limit), float(args.dalitz_limit))
+    global_fractions = simplex_grid(args.grid_size)
+    shuffled_ids = np.random.default_rng(args.seed).permutation(reaction_event_ids)
+    mixed_normal = np.random.default_rng(args.energy_smear_seed).normal(size=mixed_events["kinetic"].shape)
+    rng_template = np.random.default_rng(args.energy_smear_seed + 1)
+    template_normal = [rng_template.normal(size=e["kinetic"].shape) for e in pure_events]
+    template_cache, data_cache, fit_cache = {}, {}, {}
 
-    xlabel, file_tag, scan_description = (
-        scan_axis_metadata(args.scan)
-    )
-    if args.output is None:
-        args.output = Path(
-            f"scan_162_{file_tag}_fractions.png"
-        )
+    def reconstruct(events, parameters, normal):
+        theta, phi, fwhm, threshold = parameters
+        # Keep the reconstruction prescription identical even at zero width.
+        source = ("sphere-center" if args.study != "legacy" or theta != 0 or phi != 0
+                  else "momentum")
+        reconstructed, angular = reconstruct_with_granularity(
+            events, theta, phi, args.theta_offset_deg, args.phi_offset_deg,
+            angle_source=source, sphere_center_mm=sphere_center_mm)
+        responded, _, energy = apply_closure_energy_response(reconstructed, fwhm, threshold, normal)
+        return responded, angular, energy
 
-    sphere_center_mm = np.asarray(
-        [
-            args.sphere_center_x_mm,
-            args.sphere_center_y_mm,
-            args.sphere_center_z_mm,
-        ],
-        dtype=float,
-    )
-    limits = (
-        -float(args.dalitz_limit),
-        float(args.dalitz_limit),
-    )
+    def templates(parameters):
+        if parameters not in template_cache:
+            histograms = np.array([
+                dalitz_histogram(reconstruct(events, parameters, normal)[0], args.bins, limits)
+                for events, normal in zip(pure_events, template_normal)])
+            # Efficiencies MUST follow exactly the same cuts as the template shapes.
+            efficiencies = response_efficiencies(histograms, pure_generated)
+            template_cache[parameters] = (histograms, efficiencies)
+        return template_cache[parameters]
 
-    pure_paths = (
-        args.seq_be_gs,
-        args.seq_be2plus,
-        args.direct,
-    )
+    def data(parameters):
+        if parameters not in data_cache:
+            responded, angular, energy = reconstruct(mixed_events, parameters, mixed_normal)
+            selected, generated = select_exact_nfit(responded, shuffled_ids, args.n_fit)
+            histogram = dalitz_histogram(selected, args.bins, limits)
+            counts, truth = generated_prefix_truth(shuffled_ids, generated, sorted_ids, sorted_channels)
+            data_cache[parameters] = {
+                "histogram": histogram, "generated": generated, "truth": truth,
+                "truth_counts": counts, "angular": angular, "energy": energy,
+                "histogram_sha256": hashlib.sha256(histogram.tobytes()).hexdigest(),
+                "event_ids_sha256": hashlib.sha256(selected["event_id"].tobytes()).hexdigest(),
+            }
+        return data_cache[parameters]
 
-    print("Loading pure benchmark samples...")
-    pure_events: list[dict[str, np.ndarray]] = []
-    efficiencies = np.empty(3, dtype=float)
-    # When angular granularity is applied to the benchmark, its templates are
-    # rebuilt via sphere-center reconstruction, which needs the hit positions.
-    benchmark_needs_hit_position = (
-        args.apply_angular_granularity_to_benchmark
-    )
-    for channel, path in enumerate(pure_paths):
-        raw = load_complete_three_alpha(
-            path,
-            load_hit_position=benchmark_needs_hit_position,
-        )
-        mask = quality_mask(
-            raw["kinetic"],
-            raw["momentum"],
-            args.mass_shell_tolerance,
-        )
-        accepted = apply_mask(raw, mask)
-        n_reaction = load_reaction_event_ids(path).size
-        efficiencies[channel] = (
-            accepted["event_id"].size
-            / float(n_reaction)
-        )
-        pure_events.append(accepted)
-        print(
-            f"  {CHANNEL_KEYS[channel]:<22} "
-            f"accepted={accepted['event_id'].size:,}, "
-            f"efficiency={efficiencies[channel]:.6%}"
-        )
+    def fit_point(data_parameters, template_parameters):
+        key = (data_parameters, template_parameters)
+        if key not in fit_cache:
+            measured = data(data_parameters)
+            histograms, efficiencies = templates(template_parameters)
+            fit = fit_histogram(measured["histogram"], histograms, efficiencies, global_fractions,
+                                args.grid_size, args.local_grid_size, args.local_sigma_span,
+                                args.template_pseudocount)
+            fit_cache[key] = {"fit": fit, "data": measured, "efficiencies": efficiencies,
+                              "template_counts": histograms.sum(axis=(1, 2))}
+        return fit_cache[key]
 
-    print("Loading mixed closure sample...")
-    mixed_raw = load_complete_three_alpha(
-        args.mixed,
-        load_hit_position=True,
-    )
-    mixed_mask = quality_mask(
-        mixed_raw["kinetic"],
-        mixed_raw["momentum"],
-        args.mass_shell_tolerance,
-    )
-    mixed_events = apply_mask(
-        mixed_raw,
-        mixed_mask,
-    )
-
-    reaction_event_ids = load_reaction_event_ids(
-        args.mixed
-    )
-    rng_order = np.random.default_rng(args.seed)
-    shuffled_reaction_ids = rng_order.permutation(
-        reaction_event_ids
-    )
-
-    rng_energy = np.random.default_rng(
-        args.energy_smear_seed
-    )
-    mixed_standard_normal = rng_energy.normal(
-        size=mixed_events["kinetic"].shape
-    )
-
-    reaction_channels = load_reaction_channels(
-        args.mixed
-    )
-    (
-        sorted_reaction_ids,
-        sorted_reaction_channels,
-    ) = prepare_reaction_channel_lookup(
-        reaction_event_ids,
-        reaction_channels,
-    )
-
-    full_file_counts = np.asarray(
-        [
-            np.count_nonzero(
-                reaction_channels == channel_id
-            )
-            for channel_id in CHANNEL_IDS
-        ],
-        dtype=float,
-    )
-    if np.sum(full_file_counts) <= 0.0:
-        raise RuntimeError(
-            "No recognized 162 channel labels in mixed reaction tree"
-        )
-    full_file_truth = (
-        full_file_counts / np.sum(full_file_counts)
-    )
-    print(
-        "Full-file channel fractions: "
-        + ", ".join(
-            f"{key}={fraction:.8f}"
-            for key, fraction in zip(
-                CHANNEL_KEYS,
-                full_file_truth,
-            )
-        )
-    )
-    ang_bench = args.apply_angular_granularity_to_benchmark
-    smr_bench = args.apply_energy_smearing_to_benchmark
-    thr_bench = args.apply_threshold_to_benchmark
-
-    if ang_bench:
-        print(
-            "Angle sources: benchmark and closure both quantized "
-            "(momentum at (Delta-theta, Delta-phi)=(0,0), otherwise "
-            "sphere-center)"
-        )
-        print("Angular granularity: applied to BOTH benchmark and closure")
-    else:
-        print(
-            "Angle sources: benchmark=continuous momentum; "
-            "closure=momentum at (Delta-theta, Delta-phi)=(0,0), "
-            "otherwise sphere-center"
-        )
-        print(
-            "Angular granularity: benchmark fixed at "
-            "Delta-theta=Delta-phi=0; closure only"
-        )
-    print(
-        "Energy smearing: "
-        + ("applied to BOTH benchmark and closure" if smr_bench
-           else "closure only")
-    )
-    print(
-        "Energy threshold: "
-        + ("applied to BOTH benchmark and closure" if thr_bench
-           else "closure only")
-    )
-    print(
-        "Full angular coverage; "
-        f"N_fit={args.n_fit:,}"
-    )
-
-    global_fractions = simplex_grid(
-        args.grid_size
-    )
-
-    n_points = values.size
-    medians = np.empty((n_points, 3), dtype=float)
-    lower95 = np.empty((n_points, 3), dtype=float)
-    upper95 = np.empty((n_points, 3), dtype=float)
-    point_truths = np.empty((n_points, 3), dtype=float)
-    rmse = np.empty(n_points, dtype=float)
-    max_abs_bias = np.empty(n_points, dtype=float)
-    mean_ci_width = np.empty(n_points, dtype=float)
-    dalitz_tv = np.empty(n_points, dtype=float)
-    generated_counts = np.empty(n_points, dtype=int)
-
-    def build_ideal_template_histograms() -> np.ndarray:
-        """Build fixed ideal templates from continuous momentum directions."""
-        histograms = np.empty(
-            (3, args.bins, args.bins),
-            dtype=float,
-        )
-        for channel, events in enumerate(pure_events):
-            reconstructed, _ = reconstruct_with_granularity(
-                events,
-                0.0,
-                0.0,
-                args.theta_offset_deg,
-                args.phi_offset_deg,
-                angle_source="momentum",
-                sphere_center_mm=sphere_center_mm,
-            )
-            # Benchmark remains ideal:
-            # continuous momentum angles, no angular quantization,
-            # no energy smearing, and no threshold.
-            histograms[channel] = dalitz_histogram(
-                reconstructed,
-                args.bins,
-                limits,
-            )
-        return histograms
-
-    # Per-channel standard-normal draws for optional template energy smearing
-    # (only used when --apply-response-to-templates is set).
-    rng_template_energy = np.random.default_rng(args.energy_smear_seed + 1)
-    template_standard_normals = [
-        rng_template_energy.normal(size=events["kinetic"].shape)
-        for events in pure_events
-    ]
-
-    def build_response_template_histograms(
-        theta_width: float,
-        phi_width: float,
-        fwhm_kev: float,
-        threshold_kev: float,
-    ) -> np.ndarray:
-        """Templates with SELECTED detector-response components applied.
-
-        Each component is toggled independently:
-          --apply-angular-granularity-to-benchmark : angular quantization
-          --apply-energy-smearing-to-benchmark     : energy FWHM smearing
-          --apply-threshold-to-benchmark           : energy threshold
-        Components left off keep their ideal value (no quantization /
-        fwhm=0 / threshold=0). Uses all surviving events per channel.
-        """
-        use_angle = args.apply_angular_granularity_to_benchmark
-        tw = theta_width if use_angle else 0.0
-        pw = phi_width if use_angle else 0.0
-        fw = fwhm_kev if args.apply_energy_smearing_to_benchmark else 0.0
-        th = threshold_kev if args.apply_threshold_to_benchmark else 0.0
-
-        template_angle_source = (
-            "momentum"
-            if (abs(tw) < 1.0e-12 and abs(pw) < 1.0e-12)
-            else "sphere-center"
-        )
-        histograms = np.empty((3, args.bins, args.bins), dtype=float)
-        for channel, events in enumerate(pure_events):
-            reconstructed, _ = reconstruct_with_granularity(
-                events,
-                tw,
-                pw,
-                args.theta_offset_deg,
-                args.phi_offset_deg,
-                angle_source=template_angle_source,
-                sphere_center_mm=sphere_center_mm,
-            )
-            response_events, _, _ = apply_closure_energy_response(
-                reconstructed,
-                fw,
-                th,
-                template_standard_normals[channel],
-            )
-            histograms[channel] = dalitz_histogram(
-                response_events,
-                args.bins,
-                limits,
-            )
-        return histograms
-
-    ideal_template_histograms = build_ideal_template_histograms()
-
-    def closure_histogram_for(
-        theta_width: float,
-        phi_width: float,
-        fwhm_kev: float,
-        threshold_kev: float,
-    ) -> tuple[
-        np.ndarray,
-        int,
-        dict[str, float],
-        dict[str, float],
-    ]:
-        closure_angle_source = (
-            "momentum"
-            if (
-                abs(theta_width) < 1.0e-12
-                and abs(phi_width) < 1.0e-12
-            )
-            else "sphere-center"
-        )
-        reconstructed, angular_diagnostics = (
-            reconstruct_with_granularity(
-                mixed_events,
-                theta_width,
-                phi_width,
-                args.theta_offset_deg,
-                args.phi_offset_deg,
-                angle_source=closure_angle_source,
-                sphere_center_mm=sphere_center_mm,
-            )
-        )
-        response_events, _, energy_diagnostics = (
-            apply_closure_energy_response(
-                reconstructed,
-                fwhm_kev,
-                threshold_kev,
-                mixed_standard_normal,
-            )
-        )
-        selected, generated_count = select_exact_nfit(
-            response_events,
-            shuffled_reaction_ids,
-            args.n_fit,
-        )
-        histogram = dalitz_histogram(
-            selected,
-            args.bins,
-            limits,
-        )
-        return (
-            histogram,
-            generated_count,
-            angular_diagnostics,
-            energy_diagnostics,
-        )
-
-    # Baseline for Dalitz-distance diagnostic: set only the scanned
-    # parameter to zero and keep all other fixed response parameters.
-    baseline_parameters = response_parameters(
-        args.scan,
-        0.0,
-        args.fixed_theta_deg,
-        args.fixed_phi_deg,
-        args.fixed_energy_fwhm_keV,
-        args.fixed_threshold_keV,
-    )
-    baseline_histogram, _, _, _ = closure_histogram_for(
-        *baseline_parameters
-    )
-    baseline_probability = (
-        baseline_histogram
-        / np.sum(baseline_histogram)
-    )
-
+    nominal = nominal_response(args)
+    reference_fit = fit_point(nominal, nominal)["fit"] if args.study == "calibration" else None
+    baseline_parameters = (nominal if args.study == "calibration" else
+                           response_parameters(args.scan, 0.0, *nominal))
+    baseline_probability = data(baseline_parameters)["histogram"] / args.n_fit
+    records, data_parameters, template_parameters = [], [], []
     for index, value in enumerate(values):
-        (
-            theta_width,
-            phi_width,
-            fwhm_kev,
-            threshold_kev,
-        ) = response_parameters(
-            args.scan,
-            float(value),
-            args.fixed_theta_deg,
-            args.fixed_phi_deg,
-            args.fixed_energy_fwhm_keV,
-            args.fixed_threshold_keV,
-        )
+        dpar, tpar = response_pair(args, float(value))
+        record = fit_point(dpar, tpar)
+        records.append(record)
+        data_parameters.append(dpar)
+        template_parameters.append(tpar)
+        fitted = record["fit"]
+        error = fitted["median"] - record["data"]["truth"]
+        print(f"[{index+1}/{len(values)}] data={dpar}, template={tpar}; "
+              f"median={np.array2string(fitted['median'], precision=6)}; "
+              f"max|single-sample error|={np.max(np.abs(error)):.6g}")
 
-        print(
-            "\n"
-            f"[{index + 1}/{n_points}] "
-            f"{args.scan}={value:g}; "
-            f"Delta-theta={theta_width:g} deg, "
-            f"Delta-phi={phi_width:g} deg, "
-            f"FWHM={fwhm_kev:g} keV, "
-            f"threshold={threshold_kev:g} keV"
-        )
+    medians = np.array([r["fit"]["median"] for r in records])
+    lower95 = np.array([r["fit"]["lower95"] for r in records])
+    upper95 = np.array([r["fit"]["upper95"] for r in records])
+    truth = np.array([r["data"]["truth"] for r in records])
+    errors = medians - truth
+    widths = upper95 - lower95
+    shifts = medians - reference_fit["median"] if reference_fit is not None else None
+    data_hashes = [r["data"]["histogram_sha256"] for r in records]
+    event_hashes = [r["data"]["event_ids_sha256"] for r in records]
+    if args.study == "calibration" and (len(set(data_hashes)) != 1 or len(set(event_hashes)) != 1):
+        raise RuntimeError("Calibration scan changed the pseudodata: paired comparison is invalid")
+    if args.study == "matched" and not np.array_equal(data_parameters, template_parameters):
+        raise RuntimeError("Matched scan does not have equal data/template response parameters")
 
-        any_benchmark_response = (
-            args.apply_angular_granularity_to_benchmark
-            or args.apply_energy_smearing_to_benchmark
-            or args.apply_threshold_to_benchmark
-        )
-        if any_benchmark_response:
-            template_histograms = build_response_template_histograms(
-                theta_width,
-                phi_width,
-                fwhm_kev,
-                threshold_kev,
-            )
-        else:
-            template_histograms = ideal_template_histograms
-        (
-            mixed_histogram,
-            generated_count,
-            angular_diagnostics,
-            energy_diagnostics,
-        ) = closure_histogram_for(
-            theta_width,
-            phi_width,
-            fwhm_kev,
-            threshold_kev,
-        )
-
-        prefix_counts, point_truth = generated_prefix_truth(
-            shuffled_reaction_ids,
-            generated_count,
-            sorted_reaction_ids,
-            sorted_reaction_channels,
-        )
-        point_truths[index] = point_truth
-
-        fit = fit_histogram(
-            mixed_histogram,
-            template_histograms,
-            efficiencies,
-            global_fractions,
-            args.grid_size,
-            args.local_grid_size,
-            args.local_sigma_span,
-            args.template_pseudocount,
-        )
-
-        median = np.asarray(fit["median"])
-        low = np.asarray(fit["lower95"])
-        high = np.asarray(fit["upper95"])
-        bias = median - point_truth
-        ci_width = high - low
-
-        medians[index] = median
-        lower95[index] = low
-        upper95[index] = high
-        rmse[index] = np.sqrt(
-            np.mean(bias**2)
-        )
-        max_abs_bias[index] = np.max(
-            np.abs(bias)
-        )
-        mean_ci_width[index] = np.mean(
-            ci_width
-        )
-        generated_counts[index] = generated_count
-
-        probability = (
-            mixed_histogram
-            / np.sum(mixed_histogram)
-        )
-        dalitz_tv[index] = (
-            0.5
-            * np.sum(
-                np.abs(
-                    probability
-                    - baseline_probability
-                )
-            )
-        )
-
-        print(
-            "  generated-prefix truth="
-            + np.array2string(
-                point_truth,
-                precision=7,
-                separator=", ",
-            )
-            + "  counts="
-            + np.array2string(
-                prefix_counts,
-                separator=", ",
-            )
-        )
-        print(
-            "  median="
-            + np.array2string(
-                median,
-                precision=7,
-                separator=", ",
-            )
-        )
-        print(
-            "  95% widths="
-            + np.array2string(
-                ci_width,
-                precision=7,
-                separator=", ",
-            )
-        )
-        print(
-            f"  N_generated={generated_count:,}, "
-            f"RMSE={rmse[index]:.8f}, "
-            f"max|bias|={max_abs_bias[index]:.8f}, "
-            f"mean CI width={mean_ci_width[index]:.8f}, "
-            f"Dalitz TV={dalitz_tv[index]:.8f}"
-        )
-
-
+    xlabel, file_tag, _ = scan_axis_metadata(args.scan)
+    plot_values = values
+    if args.study == "calibration":
+        nominal_value = nominal[RESPONSE_NAMES.index(args.scan)]
+        plot_values = values - nominal_value
+        unit = "deg" if args.scan in ("theta", "phi") else "keV"
+        xlabel = f"Template {args.scan} minus true response [{unit}]"
     fixed_ylims = None
-    if (
-        args.scan in ("theta", "phi")
-        and not args.auto_y_range
-    ):
-        fixed_ylims = (
-            tuple(map(float, args.alpha0_ylim)),
-            tuple(map(float, args.alpha1_ylim)),
-            tuple(map(float, args.direct_ylim)),
-        )
-
-    figure = plot_fraction_scan(
-        values,
-        medians,
-        lower95,
-        upper95,
-        point_truths,
-        xlabel,
-        fixed_ylims=fixed_ylims,
-    )
-
-    output_path = Path(outdir) / Path(args.output).name
+    if args.study == "legacy" and args.scan in ("theta", "phi") and not args.auto_y_range:
+        fixed_ylims = (tuple(args.alpha0_ylim), tuple(args.alpha1_ylim), tuple(args.direct_ylim))
+    figure = plot_fraction_scan(plot_values, medians, lower95, upper95, truth, xlabel,
+                                fixed_ylims=fixed_ylims)
+    title = {"matched": "Matched data/template response", "calibration": "Fixed data; template calibration scan",
+             "legacy": "Legacy response scan"}[args.study]
+    figure.suptitle(title, y=1.01)
+    output = args.output or Path(f"scan_162_{args.study}_{file_tag}_fractions.png")
     if save:
         Path(outdir).mkdir(parents=True, exist_ok=True)
-        figure.savefig(output_path, dpi=300, bbox_inches="tight")
-        print("\nWrote:")
-        print(f"  {output_path}")
+        figure.savefig(Path(outdir) / Path(output).name, dpi=300, bbox_inches="tight")
 
     return {
-        "figure": figure,
-        "values": values,
-        "medians": medians,
-        "lower95": lower95,
-        "upper95": upper95,
-        "truth": point_truths,
+        "figure": figure, "study": args.study, "scan": args.scan, "values": values,
+        "medians": medians, "lower95": lower95, "upper95": upper95, "truth": truth,
+        "bias": errors, "ci_widths": widths, "paired_shift": shifts,
+        "matched_reference": reference_fit,
+        "data_response": np.asarray(data_parameters), "template_response": np.asarray(template_parameters),
+        "template_efficiencies": np.array([r["efficiencies"] for r in records]),
+        "template_accepted_counts": np.array([r["template_counts"] for r in records]),
+        "generated_counts": np.array([r["data"]["generated"] for r in records]),
+        "truth_counts": np.array([r["data"]["truth_counts"] for r in records]),
+        "data_histogram_sha256": data_hashes, "data_event_ids_sha256": event_hashes,
+        "dalitz_tv": np.array([0.5*np.abs(r["data"]["histogram"]/args.n_fit-baseline_probability).sum()
+                                for r in records]),
+        "full_file_truth": full_file_truth, "n_fit": args.n_fit,
+        "settings": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
+        "interval_scope": "Conditional on finite template histograms; no MC-template uncertainty or coverage claim",
     }
+
+
+def plot_response_study_summary(results: dict[str, dict]) -> plt.Figure:
+    """Show conditional resolution OR paired calibration shifts, separately.
+
+    All displayed fraction differences/interval widths are percentage points.
+    Calibration shift lines have no invented error bars: both fits share data.
+    """
+    names = [name for name in RESPONSE_NAMES if name in results]
+    if not names:
+        raise ValueError("No scan results to plot")
+    modes = {results[name]["study"] for name in names}
+    if len(modes) != 1 or not modes <= {"matched", "calibration"}:
+        raise ValueError("Plot matched and calibration studies in separate figures")
+    study = modes.pop()
+    figure, axes = plt.subplots(2, len(names), figsize=(4.1*len(names), 7.2),
+                                squeeze=False, layout="constrained")
+    colors = ("#0072B2", "#D55E00", "#009E73")
+    labels = (r"$\alpha_0$", r"$\alpha_1$", r"Direct $3\alpha$")
+    titles = {"theta": r"Polar granularity $\Delta\theta$",
+              "phi": r"Azimuthal granularity $\Delta\phi$",
+              "energy-fwhm": "Energy FWHM", "threshold": "Per-alpha threshold"}
+    for col, name in enumerate(names):
+        result = results[name]
+        unit = "deg" if name in ("theta", "phi") else "keV"
+        x = result["values"].copy()
+        if study == "calibration":
+            x -= result["data_response"][0, RESPONSE_NAMES.index(name)]
+        for channel, (color, label) in enumerate(zip(colors, labels)):
+            top = (result["ci_widths"][:, channel] if study == "matched"
+                   else result["paired_shift"][:, channel]) * 100
+            axes[0, col].plot(x, top, "o-", ms=4, color=color, label=label)
+            error = (result["medians"][:, channel]-result["truth"][:, channel])*100
+            lower = (result["lower95"][:, channel]-result["truth"][:, channel])*100
+            upper = (result["upper95"][:, channel]-result["truth"][:, channel])*100
+            axes[1, col].plot(x, error, "o-", ms=4, color=color)
+            axes[1, col].fill_between(x, lower, upper, color=color, alpha=.13)
+        axes[0, col].set_title(titles[name], fontsize=12)
+        axes[1, col].axhline(0, color="black", ls="--", lw=.8)
+        for ax in axes[:, col]:
+            ax.grid(alpha=.22)
+            ax.tick_params(labelsize=9)
+            ax.set_xlabel(("Template minus true response" if study == "calibration"
+                           else "Common response")+f" [{unit}]", fontsize=10)
+            if study == "calibration":
+                ax.axvline(0, color="gray", ls=":", lw=.8)
+        if study == "calibration":
+            axes[0, col].axhline(0, color="black", ls="--", lw=.8)
+    axes[0, 0].set_ylabel("95% interval width [pp]" if study == "matched"
+                           else "Shift from matched fit [pp]")
+    axes[1, 0].set_ylabel("Fit minus prefix truth [pp]\nshading: conditional 95% interval")
+    axes[0, 0].legend(fontsize=9)
+    figure.suptitle("A. Matched response: conditional resolving ability" if study == "matched"
+                    else "B. Fixed pseudodata: template calibration sensitivity", fontsize=15)
+    return figure
 
 
 def _default_args() -> argparse.Namespace:
@@ -2319,7 +2100,7 @@ def _default_args() -> argparse.Namespace:
 
 def scan_detector_theta_phi_response_162_channel_fit(
     seq_be_gs, seq_be2plus, direct, mixed,
-    save=False, outdir=".", **overrides,
+    save=False, outdir=".", prepared_inputs=None, **overrides,
 ):
     """Detector theta/phi granularity response scan of the 162-keV fit.
 
@@ -2339,7 +2120,12 @@ def scan_detector_theta_phi_response_162_channel_fit(
 
     Returns
     -------
-    dict with keys: figure, values, medians, lower95, upper95, truth.
+    dict including figure, medians, lower95, upper95, truth, ci_widths,
+    data_response, template_response, template_efficiencies and paired_shift.
+    ``study="matched"`` scans equal data/template response; ``study="calibration"``
+    keeps data at the fixed_* parameters and varies templates only. Reuse the
+    output of ``load_response_inputs`` with ``prepared_inputs`` to avoid reloading
+    ROOT files across consecutive scans. Legacy flags remain supported.
     """
     args = _default_args()
     args.seq_be_gs = Path(seq_be_gs)
@@ -2350,7 +2136,7 @@ def scan_detector_theta_phi_response_162_channel_fit(
         if not hasattr(args, key):
             raise TypeError(f"unknown option: {key!r}")
         setattr(args, key, value)
-    return _run(args, save=save, outdir=outdir)
+    return _run(args, save=save, outdir=outdir, prepared_inputs=prepared_inputs)
 
 
 if __name__ == "__main__":
