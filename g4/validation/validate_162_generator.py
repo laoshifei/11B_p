@@ -3,8 +3,9 @@
 
 Run from a terminal or import ``validate_generator`` from Note.ipynb.  No
 simulation, fit, detector correction, or permanent output is performed by
-default.  The Laursen Eq. (2) reweighting is an angular sensitivity control,
-not an implementation of that paper's full, Bose-symmetrized M4 model.
+default. Two angular-only controls are reported separately: an independently
+derived unpolarized single-path L=2 law and the literal printed Laursen Eq. (2),
+whose consistency is under review. Neither is the full Bose-symmetrized M4.
 """
 
 from __future__ import annotations
@@ -20,6 +21,11 @@ import numpy as np
 import uproot
 from numpy.polynomial import Legendre
 from scipy.stats import chi2
+
+if __package__:
+    from .audit_162_angular_reference import single_path_l2_pdf, total_variation
+else:
+    from audit_162_angular_reference import single_path_l2_pdf, total_variation
 
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -91,7 +97,7 @@ def angular_pdf(x, a2=-0.489, a4=0.647):
 
 
 def laursen_eq2_pdf(x):
-    """Published Eq. (2), normalized in cos(theta_2), BEFORE symmetrization."""
+    """Literal printed Eq. (2), normalized in dx; consistency under review."""
     normalization = 2 * 1.12 + 2 * 3.2 / 3 - 2 * 3.2 / 5
     return (1.12 + 3.2*x*x - 3.2*x**4) / normalization
 
@@ -121,12 +127,15 @@ def validate_generator(root_path=DEFAULT_ROOT, *, chunk_size=50000):
                for k in ("alpha0_primary", "alpha1_primary", "alpha1_secondary")}
     energy_hist = np.zeros((2, 122))
     weighted_energy_hist = np.zeros(122)
+    l2_weighted_energy_hist = np.zeros(122)
     dalitz = np.zeros((2, 100, 100))
+    l2_dalitz = np.zeros((100, 100))
     scalar = dict(n=0, invalid=0, q_min=np.inf, q_max=-np.inf, q_sum=0.0,
                   max_momentum_residual=0.0, max_cm_residual=0.0,
                   max_sigma_relative_residual=0.0, proton_min=np.inf,
                   proton_max=-np.inf, proton_sum=0.0, weight_sum=0.0,
-                  weight_square_sum=0.0, max_angle_frame_difference=0.0)
+                  weight_square_sum=0.0, max_angle_frame_difference=0.0,
+                  l2_weight_sum=0.0, l2_weight_square_sum=0.0)
     event_ids = []
     channels = {}
     config_values = {}
@@ -233,9 +242,14 @@ def validate_generator(root_path=DEFAULT_ROOT, *, chunk_size=50000):
             if np.any(baseline <= 0):
                 raise ValueError("Angular control requires positive proposal density")
             weights = laursen_eq2_pdf(x)/baseline
+            l2_weights = single_path_l2_pdf(x)/baseline
             scalar["weight_sum"] += weights.sum()
             scalar["weight_square_sum"] += np.square(weights).sum()
+            scalar["l2_weight_sum"] += l2_weights.sum()
+            scalar["l2_weight_square_sum"] += np.square(l2_weights).sum()
             weighted_energy_hist += np.histogram(cm[exc].ravel(), energy_edges, weights=np.repeat(weights, 3))[0]
+            l2_weighted_energy_hist += np.histogram(
+                cm[exc].ravel(), energy_edges, weights=np.repeat(l2_weights, 3))[0]
             eps = cm[exc]/cm[exc].sum(axis=1)[:, None]
             # Coordinate relabelling for display ONLY: does not add amplitude interference.
             for perm in itertools.permutations(range(3)):
@@ -244,6 +258,8 @@ def validate_generator(root_path=DEFAULT_ROOT, *, chunk_size=50000):
                 yy = e[:, 0]-1/3
                 dalitz[0] += np.histogram2d(xx, yy, bins=(dalitz_edges, dalitz_edges))[0]/6
                 dalitz[1] += np.histogram2d(xx, yy, bins=(dalitz_edges, dalitz_edges), weights=weights)[0]/6
+                l2_dalitz += np.histogram2d(
+                    xx, yy, bins=(dalitz_edges, dalitz_edges), weights=l2_weights)[0]/6
 
     n = scalar["n"]
     if n == 0:
@@ -260,6 +276,7 @@ def validate_generator(root_path=DEFAULT_ROOT, *, chunk_size=50000):
     scalar["q_mean"] = scalar["q_sum"]/n
     scalar["proton_mean"] = scalar["proton_sum"]/n
     scalar["reweight_neff"] = scalar["weight_sum"]**2/scalar["weight_square_sum"]
+    scalar["l2_reweight_neff"] = scalar["l2_weight_sum"]**2/scalar["l2_weight_square_sum"]
 
     specs = {"alpha0_primary": [1, 0, 0.6, 0, 0],
              "alpha1_primary": [1, 0, 0, 0, 0],
@@ -280,6 +297,8 @@ def validate_generator(root_path=DEFAULT_ROOT, *, chunk_size=50000):
                                    configured=specs[key][order], z=(estimate-specs[key][order])/se))
     grid = np.linspace(-1, 1, 20001)
     scalar["angular_tv_eq2"] = float(np.trapezoid(np.abs(angular_pdf(grid)-laursen_eq2_pdf(grid)), grid)/2)
+    scalar["angular_tv_l2"] = total_variation(angular_pdf, single_path_l2_pdf)
+    scalar["angular_tv_eq2_l2"] = total_variation(laursen_eq2_pdf, single_path_l2_pdf)
     checks = [
         ("162-keV sequential channels only", True, channels),
         ("Unique incident event IDs", scalar["unique_events"] == n, scalar["unique_events"]),
@@ -320,10 +339,31 @@ def validate_generator(root_path=DEFAULT_ROOT, *, chunk_size=50000):
                       analysis_script_sha256=sha256(__file__),
                       git_head=subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=PROJECT, text=True).strip(),
                       source_note="Current source checkout; original ROOT generation commit is not inferred from current HEAD.")
+    # Preserve the original Eq. (2) result fields for existing callers.
+    angular_controls = {
+        "single_path_l2": dict(energy_hist=l2_weighted_energy_hist, dalitz=l2_dalitz,
+                               weight_sum=scalar["l2_weight_sum"],
+                               weight_square_sum=scalar["l2_weight_square_sum"],
+                               effective_events=scalar["l2_reweight_neff"]),
+        "published_eq2": dict(energy_hist=weighted_energy_hist, dalitz=dalitz[1],
+                              weight_sum=scalar["weight_sum"],
+                              weight_square_sum=scalar["weight_square_sum"],
+                              effective_events=scalar["reweight_neff"]),
+    }
+    for control in angular_controls.values():
+        control["energy_shape_tv"] = float(np.abs(
+            control["energy_hist"]/control["energy_hist"].sum()
+            - energy_hist[1]/energy_hist[1].sum()).sum()/2)
+        control["dalitz_shape_tv"] = float(np.abs(
+            control["dalitz"]/control["dalitz"].sum()
+            - dalitz[0]/dalitz[0].sum()).sum()/2)
+    provenance["angular_reference_script_sha256"] = sha256(
+        Path(__file__).with_name("audit_162_angular_reference.py"))
     return dict(provenance=provenance, scalar=scalar, parameters=parameters, channels=channels,
                 checks=checks, angular=angular, angle_rows=angle_rows, external=external,
                 angle_edges=angle_edges, energy_edges=energy_edges, energy_hist=energy_hist,
-                weighted_energy_hist=weighted_energy_hist, dalitz_edges=dalitz_edges, dalitz=dalitz)
+                weighted_energy_hist=weighted_energy_hist, dalitz_edges=dalitz_edges, dalitz=dalitz,
+                angular_controls=angular_controls)
 
 
 def plot_validation(result):
@@ -336,35 +376,53 @@ def plot_validation(result):
     mid = (r["angle_edges"][:-1]+r["angle_edges"][1:])/2
     bw = np.diff(r["angle_edges"])
     figures = []
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 3.7), layout="constrained")
+    fig, axes = plt.subplots(1, 3, figsize=(14, 4.5), layout="constrained")
     for ax, key, title in zip(axes, r["angular"], [r"$\alpha_0$: primary angle", r"$\alpha_1$: primary angle", r"$\alpha_1$: secondary angle"]):
         a = r["angular"][key]
         ax.errorbar(mid, a["hist"]/a["n"]/bw, np.sqrt(a["hist"])/a["n"]/bw,
                     fmt=".", ms=3, color="black", label="Recorded generator")
         ax.stairs(a["expected"]/a["n"]/bw, r["angle_edges"], color="#0072B2", label="Configured density")
         if key == "alpha1_secondary":
-            ax.plot(grid, laursen_eq2_pdf(grid), color="#D55E00", label="Laursen Eq. (2) only")
-        ax.set(xlabel=r"$\cos\theta$", ylabel="Probability density", title=title, xlim=(-1, 1))
+            ax.plot(grid, single_path_l2_pdf(grid), color="#009E73", lw=1.8,
+                    label="Single-path L=2 (independent coupling)")
+            ax.plot(grid, laursen_eq2_pdf(grid), color="#D55E00", ls="--",
+                    label="Printed Eq. (2) (consistency under review)")
+        ax.set(xlabel=r"$x=\cos\chi$ (8Be rest frame)" if key == "alpha1_secondary"
+               else r"$\cos\theta_{CM}$ (beam axis)",
+               ylabel="Probability density in cosine", title=title, xlim=(-1, 1))
+        ax.set_ylim(0, max(1.12, ax.get_ylim()[1]))
         ax.text(.03, .04, f"N={a['n']:,}\nconfigured: chi2/ndf={a['chi2']:.1f}/{a['dof']}, p={a['p']:.3g}",
                 transform=ax.transAxes, fontsize=8)
-        ax.legend(fontsize=8, loc="upper right")
+    handles, labels = axes[-1].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="outside lower center", ncols=2, fontsize=9)
+    fig.suptitle("Sampling checks and angular references; reference curves are not experimental data", fontsize=11)
     figures.append(fig)
 
-    fig, axes = plt.subplots(1, 3, figsize=(13.5, 3.9), layout="constrained")
-    densities = [h/h.sum()/np.diff(r["dalitz_edges"])[0]**2 for h in r["dalitz"]]
+    fig = plt.figure(figsize=(12.5, 7.7), layout="constrained")
+    layout = fig.add_gridspec(2, 3, height_ratios=(1, 1.05))
+    dalitz_axes = [fig.add_subplot(layout[0, i]) for i in range(3)]
+    spectrum_ax = fig.add_subplot(layout[1, :])
+    controls = r["angular_controls"]
+    densities = [h/h.sum()/np.diff(r["dalitz_edges"])[0]**2
+                 for h in (r["dalitz"][0], controls["single_path_l2"]["dalitz"],
+                           controls["published_eq2"]["dalitz"])]
     norm = Normalize(0, max(np.quantile(h[h>0], .995) for h in densities))
-    for ax, h, title in zip(axes[:2], densities, ["Current generator", "Eq. (2) angular control only"]):
+    for ax, h, title in zip(dalitz_axes, densities,
+                            ["Current generator", "Single-path L=2 angular control",
+                             "Printed Eq. (2) control (under review)"]):
         im = ax.pcolormesh(r["dalitz_edges"], r["dalitz_edges"], h.T, cmap="viridis", norm=norm, shading="auto")
         ax.set(xlabel=r"$\chi$", ylabel=r"$\psi$", title=title, aspect="equal")
-    fig.colorbar(im, ax=axes[:2], label="Normalized density", shrink=.8)
+    fig.colorbar(im, ax=dalitz_axes, label="Normalized density", shrink=.85, extend="max")
     e = r["energy_edges"]
-    for h, label, color in [(r["energy_hist"][1], "Current generator", "#0072B2"),
-                            (r["weighted_energy_hist"], "Eq. (2) angular control", "#D55E00")]:
-        axes[2].stairs(h/h.sum()/np.diff(e), e, label=label, color=color)
-    axes[2].set(xlabel=r"$T_\alpha$ in three-alpha CM [MeV]", ylabel="Probability density [1/MeV]",
+    for h, label, color, style in [
+            (r["energy_hist"][1], "Current generator", "#0072B2", "-"),
+            (controls["single_path_l2"]["energy_hist"], "Single-path L=2 angular control", "#009E73", "-"),
+            (r["weighted_energy_hist"], "Printed Eq. (2) control (under review)", "#D55E00", "--")]:
+        spectrum_ax.stairs(h/h.sum()/np.diff(e), e, label=label, color=color, linestyle=style)
+    spectrum_ax.set(xlabel=r"$T_\alpha$ in three-alpha CM [MeV]", ylabel="Probability density [1/MeV]",
                 title="Alpha1-channel single-alpha spectrum")
-    axes[2].legend(fontsize=8)
-    fig.suptitle("Generator-level sensitivity; no detector response, no Bose-interference correction", fontsize=11)
+    spectrum_ax.legend(fontsize=9)
+    fig.suptitle("Angular-only reweighting of the same sample; fixed line shape, no Bose sum or detector response", fontsize=11)
     figures.append(fig)
 
     fig, axes = plt.subplots(1, 2, figsize=(10.2, 3.8), layout="constrained")
