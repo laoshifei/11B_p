@@ -23,6 +23,38 @@
 - ROOT 保存反应、运行信息和按配置启用的探测器响应；字段以 `g4/include/DataStructure.hh`、`g4/src/RootIO.cc` 为准。分析旧数据时核对对应版本及 ROOT 内的运行配置。
 - `/run/beamOn` 表示入射事件数，实际反应数由 `reaction` 树统计。偏置采样下的原始计数不直接等于绝对物理产额。
 
+162 keV 的宽 `8Be(2+)` 分支新增可选的纯 `L=2` Breit–Wigner 振幅控制：
+
+```text
+/h11b/162AlphaDecayModel boseSymmetricL2BW
+/h11b/162BoseRadialBins 1024
+/h11b/162BoseMaxAttempts 100000
+```
+
+`singlePathL2BW`、`incoherentL2BW`、`boseSymmetricL2BW` 分别采用单路径、三配对强度相加、三配对复振幅相加后平方。三者使用相同线形和角动量耦合；默认仍为 `legacyLegendreA2A4`。新模型假定未极化母态，不使用旧次级 A2/A4 参数，并拒绝非零的 alpha1 初级角分布系数。仅替换 162 的 alpha1 分支；基态、直接过程、γ 和 675 路径保持原有处理。
+
+相干采样从非相干路径混合分布提出事件，以 `I_coh/(3 I_inc)` 接受，解析上界为 1；越界或超出尝试上限时报错。采用现有穿透率及 BW 线形、BW 复相位，尚未包含 R-matrix 能移、外部库仑／硬球相位及三体库仑修正，不能称为完整 Laursen M4 或已获实验验证的模型。方法依据：K. L. Laursen et al., *Complete kinematical study of the 3α breakup of the 16.11 MeV state in 12C*, EPJ A **52**, 271 (2016), DOI: [10.1140/epja/i2016-16271-2](https://doi.org/10.1140/epja/i2016-16271-2)，式 (3)–(5)；本实现只采用其中的三配对相干结构。
+
+ROOT schema 9 记录配置模型、实际模型、网格、接受概率和尝试次数。三路径模型的三颗 α 使用角色 6，`h11b162_labels_are_bookkeeping=1`；`alpha1/2/3` 及 `pair23` 此时仅为存储槽位，不能解释为唯一的先后发射顺序。`h11b162_bose_*_weight` 是任意共同归一化下的振幅强度诊断，已接受事件不能再乘这些权重。
+
+从仓库根目录运行数值验证（Python 需要 NumPy、SciPy）和独立小样本宏：
+
+```bash
+cmake --build g4/build --target validate_162_bose -j8
+python3 g4/validation/validate_162_bose.py
+HB_DATA_DIR=/tmp/11bp-bose-check ./g4/build/HB g4/macros/validation_162_bose_l2.mac 1
+```
+
+本地研究集中维护 `jupyter/` 下三份主笔记：
+
+- `codex_0001_p11B三α反应运动学介绍与验证.ipynb`：共用运动学定义后，162 keV 与 675 keV 分节介绍各自的模型、能量预算、图与验证；原角关联及纯 L2 Bose 研究保留在 162 keV 节内。
+- `codex_0002_162keV_探测器响应研究.ipynb`：响应一致、固定反应预算、校准失配及有限模板统计，分别分章报告。
+- `codex_0003_162keV_弱分支检验与区间校准.ipynb`：零分支基准、边界诊断、区间校准和独立正注入验证。
+
+旧分散笔记及完整计算过程保存在 `jupyter/archive/codex_162keV_20261019/`；历史样本保留原始模型解释。主笔记默认读取已有记录并展示或重绘结果，不自动重跑模拟与大批拟合。旧 `plot_162_primary.py` 和 `plot_162_secondary.py` 会拒绝三路径模型样本，避免把任意槽位误当作物理初级／次级 α；总 α 谱和对称观测量仍可使用。
+
+675 keV 的 100 万入射样本保存在本地 `g4/data/spectrum_675_lab_coherent_L1L3_1M_20261020.root`。只读全样本验证入口为 `g4/validation/validate_675_generator.py`；运行条件、种子、验证结果和图 12 集中记录在 0001 的第 3.3 节，原 100 事件回归记录保留在第 3.2 节。
+
 ## 编译与运行
 
 需要 CMake、C++17 编译器、Geant4、ROOT，以及合并线程输出所用的 `hadd`。整理时本机环境为 Geant4 11.3.2、ROOT 6.34.10；应先加载安装环境，让 CMake 能找到二者。
