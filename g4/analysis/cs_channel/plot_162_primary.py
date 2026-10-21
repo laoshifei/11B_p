@@ -18,8 +18,12 @@ def plot_162_primary(filename, save=False):
     filename : ROOT 文件路径（str 或 Path 都行）
     save     : False 不存盘；给字符串/Path 就存到该路径；给 True 存默认文件名
     """
-    with uproot.open(filename) as f:
-        a = f["reaction"].arrays(
+    with uproot.open(filename, handler=uproot.source.file.MemmapSource) as f:
+        tree = f["reaction"]
+        if "h11b162_labels_are_bookkeeping" in tree:
+            if np.any(tree["h11b162_labels_are_bookkeeping"].array(library="np")):
+                raise ValueError("Symmetric 162 samples have no unique primary alpha; use all-alpha or permutation-invariant observables.")
+        a = tree.arrays(
             ["e_alpha1", "e_alpha1_cm", "branch_id"], library="np"
         )
 

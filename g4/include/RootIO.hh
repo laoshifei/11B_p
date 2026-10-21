@@ -34,7 +34,10 @@ private:
 
 private:
   ULong64_t random_seed = 0;
-  G4int output_schema_version = 8;
+  G4int output_schema_version = 9;
+  G4int configured_162_alpha_decay_model = 0;
+  G4int configured_162_bose_radial_bins = 0;
+  G4int configured_162_bose_max_attempts = 0;
   G4double configured_162_alpha0_branching_fraction = H11BDefault162Alpha0BranchingFraction;
   G4double configured_162_alpha1_branching_fraction = 1.0 - H11BDefault162Alpha0BranchingFraction;
   G4int virtual_sphere_enabled = 0;

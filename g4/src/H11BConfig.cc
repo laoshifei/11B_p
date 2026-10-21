@@ -9,6 +9,9 @@
 #include <utility>
 
 namespace {
+H11B162AlphaDecayModel g_162_alpha_decay_model = H11BDefault162AlphaDecayModel;
+G4int g_162_bose_radial_bins = H11B162BoseDefaultRadialBins;
+G4int g_162_bose_max_attempts = H11B162BoseDefaultMaxAttempts;
 G4double g_162_alpha0_branching_fraction = H11BDefault162Alpha0BranchingFraction;
 G4bool g_enable_162_primary_angular_distribution = H11BDefaultEnable162PrimaryAngularDistribution;
 G4double g_162_primary_a1 = H11BDefault162PrimaryAngularA1;
@@ -185,6 +188,47 @@ void Validate675Alpha1SecondaryAngularDistribution()
 } // namespace
 
 namespace H11BConfig {
+H11B162AlphaDecayModel Get162AlphaDecayModel() { return g_162_alpha_decay_model; }
+const char* Get162AlphaDecayModelName()
+{
+  switch(g_162_alpha_decay_model) {
+  case H11B162AlphaDecayModel::LegacyLegendreA2A4: return "legacyLegendreA2A4";
+  case H11B162AlphaDecayModel::SinglePathL2BW: return "singlePathL2BW";
+  case H11B162AlphaDecayModel::IncoherentL2BW: return "incoherentL2BW";
+  case H11B162AlphaDecayModel::BoseSymmetricL2BW: return "boseSymmetricL2BW";
+  }
+  return "invalid";
+}
+void Set162AlphaDecayModel(const G4String& model)
+{
+  if(model=="legacyLegendreA2A4") g_162_alpha_decay_model=H11B162AlphaDecayModel::LegacyLegendreA2A4;
+  else if(model=="singlePathL2BW") g_162_alpha_decay_model=H11B162AlphaDecayModel::SinglePathL2BW;
+  else if(model=="incoherentL2BW") g_162_alpha_decay_model=H11B162AlphaDecayModel::IncoherentL2BW;
+  else if(model=="boseSymmetricL2BW") g_162_alpha_decay_model=H11B162AlphaDecayModel::BoseSymmetricL2BW;
+  else G4Exception("H11BConfig::Set162AlphaDecayModel", "H11B162BoseConfig", FatalException,
+                   "Unknown 162 alpha1 model; no silent fallback.");
+}
+G4int Get162BoseRadialBins() { return g_162_bose_radial_bins; }
+void Set162BoseRadialBins(G4int bins)
+{
+  if(bins<64 || bins>65536) {
+    G4Exception("H11BConfig::Set162BoseRadialBins", "H11B162BoseGrid", FatalException,
+                "Radial bins must be in [64, 65536].");
+    return;
+  }
+  g_162_bose_radial_bins=bins;
+}
+G4int Get162BoseMaxAttempts() { return g_162_bose_max_attempts; }
+void Set162BoseMaxAttempts(G4int attempts)
+{
+  if(attempts<1) {
+    G4Exception("H11BConfig::Set162BoseMaxAttempts", "H11B162BoseAttempts", FatalException,
+                "Max attempts must be positive.");
+    return;
+  }
+  g_162_bose_max_attempts=attempts;
+}
+
 void Set162Alpha0BranchingFraction(G4double value)
 {
   if (!std::isfinite(value) || value < 0.0 || value > 1.0) {

@@ -24,7 +24,9 @@ enum class H11BParticleRole : G4int
   BeDecayAlpha = 2,
   DirectDecayAlpha = 3,
   PrimaryGamma = 4,
-  CascadeGamma = 5
+  CascadeGamma = 5,
+  // Symmetric sequential sample: no physically unique first-emitted alpha.
+  SymmetricSequentialAlpha = 6
 };
 
 enum class H11BParticleSource : G4int

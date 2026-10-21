@@ -42,3 +42,8 @@ file(GLOB headers CONFIGURE_DEPENDS ${PROJECT_SOURCE_DIR}/include/*.hh)
 # Executable.
 add_executable(HB HB.cc ${sources} ${headers})
 target_link_libraries(HB ${Geant4_LIBRARIES} ${ROOT_LIBRARIES})
+
+# Explicitly requested validation target; uses the production 162 amplitude.
+add_executable(validate_162_bose EXCLUDE_FROM_ALL
+  validation/validate_162_bose_driver.cc src/H11B162BoseModel.cc
+  src/CoulombPenetrability.cc src/CoulombPenetrabilityData.cc)

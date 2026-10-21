@@ -88,6 +88,15 @@ struct H11BReactionData
   G4double primary_a1_used;
   G4double primary_a2_used;
 
+  // 162 model IDs: 0 legacy, 1 single L2 BW, 2 diagonal mixture, 3 coherent Bose BW.
+  G4int h11b162_alpha_decay_model;
+  G4int h11b162_decay_model_used;
+  G4int h11b162_labels_are_bookkeeping;
+  G4int h11b162_bose_radial_bins;
+  G4int h11b162_bose_sampling_attempts;
+  G4double h11b162_bose_incoherent_weight;
+  G4double h11b162_bose_coherent_weight;
+  G4double h11b162_bose_acceptance;
   G4int h11b675_decay_model; // kept for backward compatibility; 0: isotropic, 1: Legendre A2/A4, 2: strict coherent L1/L3
   G4int h11b675_decay_model_used;
   G4int h11b675_alpha_decay_model;
@@ -101,7 +110,7 @@ struct H11BReactionData
   G4double h11b675_strict_weight_max;
   G4int h11b675_strict_sampling_attempts;
   G4int enable_675_alpha1_secondary_angular_correlation;
-  G4int secondary_angular_model; // 0: isotropic, 1: Legendre A2/A4
+  G4int secondary_angular_model; // 0: isotropic, 1: Legendre A2/A4, 2: 675 amplitude, 3: 162 L2 BW amplitude
   G4double secondary_a2_used;
   G4double secondary_a4_used;
   G4int background_sequential_model; // kept for backward compatibility; current background is phase-space only
@@ -235,7 +244,11 @@ struct H11BReactionData
         projectile_phi_lab(std::numeric_limits<G4double>::quiet_NaN()),
         primary_angular_mode(0), enable_162_primary_angular_distribution(0), a1_162_primary(0), a2_162_primary(0),
         enable_675_primary_angular_distribution(0), a1_675_primary(0), a2_675_primary(0),
-        primary_a1_used(0), primary_a2_used(0), h11b675_decay_model(0),
+        primary_a1_used(0), primary_a2_used(0),
+        h11b162_alpha_decay_model(0), h11b162_decay_model_used(0), h11b162_labels_are_bookkeeping(0),
+        h11b162_bose_radial_bins(0), h11b162_bose_sampling_attempts(0),
+        h11b162_bose_incoherent_weight(0), h11b162_bose_coherent_weight(0), h11b162_bose_acceptance(0),
+        h11b675_decay_model(0),
         h11b675_decay_model_used(0), h11b675_alpha_decay_model(0), h11b675_strict_coherent_l13(0),
         h11b675_strict_permutation_symmetrized(0), h11b675_strict_l1_fraction(0), h11b675_strict_l13_phase(0),
         h11b675_strict_8be_lambda_energy_keV(0), h11b675_strict_8be_reduced_width_squared_keV(0),

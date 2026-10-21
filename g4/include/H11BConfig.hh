@@ -8,6 +8,13 @@
 #include <utility>
 
 namespace H11BConfig {
+H11B162AlphaDecayModel Get162AlphaDecayModel();
+void Set162AlphaDecayModel(const G4String& model);
+const char* Get162AlphaDecayModelName();
+G4int Get162BoseRadialBins();
+void Set162BoseRadialBins(G4int bins);
+G4int Get162BoseMaxAttempts();
+void Set162BoseMaxAttempts(G4int attempts);
 void Set162Alpha0BranchingFraction(G4double value);
 G4double Get162Alpha0BranchingFraction();
 

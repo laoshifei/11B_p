@@ -49,6 +49,9 @@ public:
   void Set162BWScaleFactorCommand(G4double factor);
   void Set675ScaleFactorCommand(G4double factor);
   void Set675AlphaDecayModelCommand(const G4String& model);
+  void Set162AlphaDecayModelCommand(const G4String& model);
+  void Set162BoseRadialBinsCommand(G4int bins);
+  void Set162BoseMaxAttemptsCommand(G4int attempts);
   void Set675StrictL1FractionCommand(G4double value);
   void Set675StrictL13PhaseCommand(G4double value);
   void Set675StrictCoherentL13Command(G4bool enabled);
@@ -99,6 +102,7 @@ private:
   void DefineCommands();
   void GenerateThreeBodyPhaseSpace(const G4HadProjectile& projectile, G4ParticleDefinition* target, G4ParticleDefinition* product1, G4ParticleDefinition* product2, G4ParticleDefinition* product3);
   void Generate675SymmetrizedCoherent3Alpha(const G4HadProjectile& projectile, G4ParticleDefinition* target, G4ParticleDefinition* product1, G4ParticleDefinition* product2, G4ParticleDefinition* product3);
+  void Generate162L2Bose3Alpha(const G4HadProjectile& projectile, G4ParticleDefinition* target, G4ParticleDefinition* product1, G4ParticleDefinition* product2, G4ParticleDefinition* product3);
   void GenerateGammaCapture(const G4HadProjectile& projectile, G4ParticleDefinition* target);
   void Generate162Gamma0(const G4LorentzVector& initial_cm, const G4LorentzVector& initial_lab, G4ParticleDefinition* c12_ground, G4ParticleDefinition* gamma_particle, const G4ThreeVector& beam_axis_cm);
   void Generate162Gamma1Cascade(const G4LorentzVector& initial_cm, const G4LorentzVector& initial_lab, G4ParticleDefinition* c12_ground, G4ParticleDefinition* gamma_particle);

@@ -1,5 +1,6 @@
 #include "H11BReaction.hh"
 #include "H11BAngularDistribution.hh"
+#include "H11B162BoseModel.hh"
 #include "H11BConfig.hh"
 #include "H11BCrossSection.hh"
 #include "H11BTrackInformation.hh"
@@ -544,6 +545,8 @@ void FillCrossSectionDiagnostics(H11BReactionData& data, const H11BCrossSectionC
 
 void FillRuntimeConfigDiagnostics(H11BReactionData& data)
 {
+  data.h11b162_alpha_decay_model = static_cast<G4int>(H11BConfig::Get162AlphaDecayModel());
+  data.h11b162_bose_radial_bins = H11BConfig::Get162BoseRadialBins();
   data.configured_162_alpha0_branching_fraction = H11BConfig::Get162Alpha0BranchingFraction();
   data.configured_162_alpha1_branching_fraction = 1.0 - data.configured_162_alpha0_branching_fraction;
   data.enable_162_primary_angular_distribution = H11BConfig::GetEnable162PrimaryAngularDistribution() ? 1 : 0;
@@ -738,6 +741,19 @@ void H11BReaction::Set675ScaleFactorCommand(G4double factor)
 void H11BReaction::Set675AlphaDecayModelCommand(const G4String& model)
 {
   H11BConfig::Set675AlphaDecayModel(model);
+}
+
+void H11BReaction::Set162AlphaDecayModelCommand(const G4String& model)
+{
+  H11BConfig::Set162AlphaDecayModel(model);
+}
+void H11BReaction::Set162BoseRadialBinsCommand(G4int bins)
+{
+  H11BConfig::Set162BoseRadialBins(bins);
+}
+void H11BReaction::Set162BoseMaxAttemptsCommand(G4int attempts)
+{
+  H11BConfig::Set162BoseMaxAttempts(attempts);
 }
 
 //....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
@@ -965,6 +981,12 @@ void H11BReaction::SetForcedDetailedChannelCommand(const G4String& channel)
 //....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
 void H11BReaction::PrintConfigCommand()
 {
+  G4cout << "162 alpha1 model: " << H11BConfig::Get162AlphaDecayModelName()
+         << "; radial bins=" << H11BConfig::Get162BoseRadialBins()
+         << "; max attempts=" << H11BConfig::Get162BoseMaxAttempts() << G4endl;
+  if(H11BConfig::Get162AlphaDecayModel()!=H11B162AlphaDecayModel::LegacyLegendreA2A4)
+    G4cout << "  Unpolarized L=2 BW amplitude control, NOT full Laursen M4. "
+           << "Legacy alpha1 angular knobs do not define this amplitude." << G4endl;
   if (!G4Threading::IsMasterThread()) {
     return;
   }
@@ -1070,6 +1092,10 @@ void H11BReaction::DefineCommands()
   messenger->DeclareMethod("675Alpha1SecondaryA2", &H11BReaction::Set675Alpha1SecondaryA2Command, "Set 675-keV alpha1 secondary A2 coefficient");
   messenger->DeclareMethod("675Alpha1SecondaryA4", &H11BReaction::Set675Alpha1SecondaryA4Command, "Set 675-keV alpha1 secondary A4 coefficient");
 
+  auto& alpha162_model_cmd = messenger->DeclareMethod("162AlphaDecayModel", &H11BReaction::Set162AlphaDecayModelCommand, "Set 162-keV alpha1 model; BW controls are not full Laursen M4");
+  alpha162_model_cmd.SetCandidates("legacyLegendreA2A4 singlePathL2BW incoherentL2BW boseSymmetricL2BW");
+  messenger->DeclareMethod("162BoseRadialBins", &H11BReaction::Set162BoseRadialBinsCommand, "Radial interpolation bins for 162 L2 BW controls, 64..65536");
+  messenger->DeclareMethod("162BoseMaxAttempts", &H11BReaction::Set162BoseMaxAttemptsCommand, "Hard attempt limit; exhaustion aborts without fallback");
   auto& alpha675_model_cmd = messenger->DeclareMethod("675AlphaDecayModel", &H11BReaction::Set675AlphaDecayModelCommand, "Set 675-keV alpha decay model");
   alpha675_model_cmd.SetCandidates("legacyLegendreA2A4 symmetrizedCoherentL1L3 legacy strict coherentL1L3");
   messenger->DeclareMethod("675StrictL1Fraction", &H11BReaction::Set675StrictL1FractionCommand, "Set strict 675-keV L=1 intensity fraction in [0,1]");
@@ -1262,6 +1288,12 @@ void H11BReaction::ReactionKinematic(const G4HadProjectile& projectile, G4Partic
   if (is_alpha1_branch && resonance_type == Resonance675 &&
       H11BConfig::Get675AlphaDecayModel() == H11B675AlphaDecayModel::SymmetrizedCoherentL1L3) {
     Generate675SymmetrizedCoherent3Alpha(projectile, target, product1, product2, product3);
+    return;
+  }
+
+  if (is_alpha1_branch && resonance_type == Resonance162 &&
+      H11BConfig::Get162AlphaDecayModel() != H11B162AlphaDecayModel::LegacyLegendreA2A4) {
+    Generate162L2Bose3Alpha(projectile, target, product1, product2, product3);
     return;
   }
 
@@ -1587,6 +1619,192 @@ void H11BReaction::ReactionKinematic(const G4HadProjectile& projectile, G4Partic
 }
 
 //....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
+
+void H11BReaction::Generate162L2Bose3Alpha(const G4HadProjectile& projectile,
+                                         G4ParticleDefinition* target,
+                                         G4ParticleDefinition* product1,
+                                         G4ParticleDefinition* product2,
+                                         G4ParticleDefinition* product3)
+{
+  reaction_data.Clear();
+  if(H11BConfig::GetEnable162PrimaryAngularDistribution() &&
+     (H11BConfig::Get162PrimaryAngularA1()!=0 || H11BConfig::Get162PrimaryAngularA2()!=0)) {
+    G4Exception("H11BReaction::Generate162L2Bose3Alpha", "H11B162BosePolarization", FatalException,
+                "The new 162 BW amplitudes require an unpolarized parent. Nonzero alpha1 primary coefficients are incompatible.");
+    return;
+  }
+  const G4double m_projectile=projectile.GetDefinition()->GetPDGMass();
+  const G4double m_target=target->GetPDGMass(), m_4He=product1->GetPDGMass();
+  const G4double m_8Be_ground=G4IonTable::GetIonTable()->GetIon(4,8,0.*keV)->GetPDGMass();
+  const G4double kinetic_lab_projectile=projectile.GetKineticEnergy();
+  const G4double sqrt_s=std::sqrt(m_projectile*m_projectile+m_target*m_target
+                                 +2*m_target*(m_projectile+kinetic_lab_projectile));
+  const G4double ex_max=std::max(0.,sqrt_s-m_4He-m_8Be_ground);
+  const G4double momentum=SafeSqrt(kinetic_lab_projectile*(kinetic_lab_projectile+2*m_projectile));
+  const G4LorentzVector lv_lab_projectile(projectile.GetMomentumDirection()*momentum,
+                                         m_projectile+kinetic_lab_projectile);
+  const G4LorentzVector lv_lab_total=lv_lab_projectile+G4LorentzVector(0,0,0,m_target);
+  const auto model=H11BConfig::Get162AlphaDecayModel();
+  const bool bookkeeping=model!=H11B162AlphaDecayModel::SinglePathL2BW;
+  const auto first_role=bookkeeping ? H11BParticleRole::SymmetricSequentialAlpha : H11BParticleRole::FirstStepAlpha;
+  const auto other_role=bookkeeping ? H11BParticleRole::SymmetricSequentialAlpha : H11BParticleRole::BeDecayAlpha;
+
+  H11B162Bose::Sample sample;
+  try {
+    const H11B162Bose::Parameters parameters{Eaa8Be2Plus/MeV,Gamma8Be2Plus/MeV,
+       H11BUseFullCoulombPenetrabilityFor8Be2Plus,H11BUseFullCoulombPenetrabilityForAlpha8BeFirstBreakup};
+    // Reuse only an EXACT energy match; rounding the cache key would change the proposal.
+    static thread_local std::unique_ptr<H11B162Bose::RadialTable> radial;
+    const auto available=(sqrt_s-3*m_4He)/MeV;
+    if(!radial || radial->available_energy!=available || radial->alpha_mass!=m_4He/MeV
+        || radial->bins!=H11BConfig::Get162BoseRadialBins())
+      radial=std::make_unique<H11B162Bose::RadialTable>(available,m_4He/MeV,parameters,H11BConfig::Get162BoseRadialBins());
+    sample=H11B162Bose::Generate(*radial,static_cast<H11B162Bose::Mode>(model),
+                               [] { return G4UniformRand(); },H11BConfig::Get162BoseMaxAttempts());
+  } catch(const std::exception& error) {
+    G4Exception("H11BReaction::Generate162L2Bose3Alpha", "H11B162BoseSampling", FatalException,error.what());
+    return;
+  }
+  ThreeAlphaCandidate accepted_candidate;
+  for(int i=0;i<3;++i) {
+    const auto& v=sample.event[i];
+    accepted_candidate.lv_cm_alpha[i]=G4LorentzVector(v.p[0]*MeV,v.p[1]*MeV,v.p[2]*MeV,v.e*MeV);
+    accepted_candidate.lv_lab_alpha[i]=accepted_candidate.lv_cm_alpha[i];
+    accepted_candidate.lv_lab_alpha[i].boost(lv_lab_total.boostVector());
+  }
+  const auto& lv_lab_alpha1 = accepted_candidate.lv_lab_alpha[0];
+  const auto& lv_lab_alpha2 = accepted_candidate.lv_lab_alpha[1];
+  const auto& lv_lab_alpha3 = accepted_candidate.lv_lab_alpha[2];
+  const auto& lv_cm_alpha1 = accepted_candidate.lv_cm_alpha[0];
+  const auto& lv_cm_alpha2 = accepted_candidate.lv_cm_alpha[1];
+  const auto& lv_cm_alpha3 = accepted_candidate.lv_cm_alpha[2];
+
+  const H11BReactionChannel detailed_channel =
+      H11BReactionChannel::Seq162Be2Plus;
+  // With permutation symmetrization these identify retained Monte Carlo
+  // bookkeeping slots, not experimentally unique alpha-particle identities.
+  AddLabeledSecondary(
+      theParticleChange,
+      new G4DynamicParticle(product1, lv_lab_alpha1),
+      detailed_channel,
+      first_role,
+      0);
+  AddLabeledSecondary(
+      theParticleChange,
+      new G4DynamicParticle(product2, lv_lab_alpha2),
+      detailed_channel,
+      other_role,
+      1);
+  AddLabeledSecondary(
+      theParticleChange,
+      new G4DynamicParticle(product3, lv_lab_alpha3),
+      detailed_channel,
+      other_role,
+      2);
+
+  const G4LorentzVector lv_cm_pair23 = lv_cm_alpha2 + lv_cm_alpha3;
+  const G4LorentzVector lv_lab_pair23 = lv_lab_alpha2 + lv_lab_alpha3;
+  const G4double m_pair23 = InvariantMass(lv_cm_pair23);
+  const G4double eaa_pair23 = std::max(0.0, m_pair23 - 2.0 * m_4He);
+  const G4double ex_8be_pair23 = eaa_pair23 - Ex8BeGroundAbove2Alpha;
+  const G4double e_alpha8be_pair23 = sqrt_s - m_4He - m_pair23;
+  G4LorentzVector lv_alpha2_pair23 = lv_cm_alpha2;
+  lv_alpha2_pair23.boost(-lv_cm_pair23.boostVector());
+
+  G4LorentzVector lv_lab_3alpha = lv_lab_alpha1 + lv_lab_alpha2 + lv_lab_alpha3;
+  const G4ThreeVector beta_3alpha = lv_lab_3alpha.boostVector();
+  G4LorentzVector lv_3alpha_cm_alpha1 = lv_lab_alpha1;
+  G4LorentzVector lv_3alpha_cm_alpha2 = lv_lab_alpha2;
+  G4LorentzVector lv_3alpha_cm_alpha3 = lv_lab_alpha3;
+  lv_3alpha_cm_alpha1.boost(-beta_3alpha);
+  lv_3alpha_cm_alpha2.boost(-beta_3alpha);
+  lv_3alpha_cm_alpha3.boost(-beta_3alpha);
+
+  reaction_data.event = G4RunManager::GetRunManager()->GetCurrentEvent()->GetEventID();
+  reaction_data.e_alpha1 = lv_lab_alpha1.e() - m_4He;
+  reaction_data.e_alpha2 = lv_lab_alpha2.e() - m_4He;
+  reaction_data.e_alpha3 = lv_lab_alpha3.e() - m_4He;
+  reaction_data.e_3alpha_cm_alpha1 = lv_3alpha_cm_alpha1.e() - m_4He;
+  reaction_data.e_3alpha_cm_alpha2 = lv_3alpha_cm_alpha2.e() - m_4He;
+  reaction_data.e_3alpha_cm_alpha3 = lv_3alpha_cm_alpha3.e() - m_4He;
+  reaction_data.theta_lab_alpha1 = lv_lab_alpha1.theta();
+  reaction_data.theta_lab_alpha2 = lv_lab_alpha2.theta();
+  reaction_data.theta_lab_alpha3 = lv_lab_alpha3.theta();
+  reaction_data.phi_lab_alpha1 = lv_lab_alpha1.phi();
+  reaction_data.phi_lab_alpha2 = lv_lab_alpha2.phi();
+  reaction_data.phi_lab_alpha3 = lv_lab_alpha3.phi();
+  reaction_data.resonance_id = 162;
+  reaction_data.branch_id = 1;
+  reaction_data.reaction_channel = static_cast<G4int>(reaction_channel);
+  reaction_data.h11b_reaction_channel = static_cast<G4int>(detailed_channel);
+  reaction_data.alpha1_role = static_cast<G4int>(first_role);
+  reaction_data.alpha2_role = static_cast<G4int>(other_role);
+  reaction_data.alpha3_role = static_cast<G4int>(other_role);
+  reaction_data.background_mode = 0; // sequential BW amplitude, not direct phase space
+  reaction_data.e_cm_p11B = sqrt_s - m_projectile - m_target;
+  reaction_data.ex_max_8Be = ex_max;
+  reaction_data.eaa_8Be = eaa_pair23;
+  reaction_data.e_alpha8Be = e_alpha8be_pair23;
+  reaction_data.projectile_kinetic_lab = kinetic_lab_projectile;
+  reaction_data.projectile_px_lab = lv_lab_projectile.px();
+  reaction_data.projectile_py_lab = lv_lab_projectile.py();
+  reaction_data.projectile_pz_lab = lv_lab_projectile.pz();
+  reaction_data.projectile_p_lab = lv_lab_projectile.vect().mag();
+  reaction_data.projectile_theta_lab = lv_lab_projectile.vect().theta();
+  reaction_data.projectile_phi_lab = lv_lab_projectile.vect().phi();
+
+  const G4ThreeVector beam_axis = projectile.GetMomentumDirection();
+  reaction_data.cos_theta_primary_cm = SafeCosBetween(lv_cm_alpha1.vect(), beam_axis);
+  reaction_data.cos_chi_exit = SafeCosBetween(lv_cm_alpha1.vect(), lv_cm_alpha2.vect());
+  reaction_data.phi_primary_cm = lv_cm_alpha1.phi();
+  reaction_data.cos_chi_secondary_8be = SafeCosBetween(lv_cm_pair23.vect(), lv_alpha2_pair23.vect());
+  reaction_data.cos_theta_secondary_correlation = reaction_data.cos_chi_secondary_8be;
+  reaction_data.primary_angular_mode = 2;
+  reaction_data.primary_a1_used = 0.0;
+  reaction_data.primary_a2_used = 0.0;
+  reaction_data.secondary_angular_model = 3; // 162 L2 amplitude, not empirical coefficients
+  reaction_data.secondary_a2_used = 0.0;
+  reaction_data.secondary_a4_used = 0.0;
+  reaction_data.background_sequential_model = 0;
+  reaction_data.opening_angle_alpha12_cm = SafeOpeningAngle(lv_3alpha_cm_alpha1.vect(), lv_3alpha_cm_alpha2.vect());
+  reaction_data.opening_angle_alpha13_cm = SafeOpeningAngle(lv_3alpha_cm_alpha1.vect(), lv_3alpha_cm_alpha3.vect());
+  reaction_data.opening_angle_alpha23_cm = SafeOpeningAngle(lv_3alpha_cm_alpha2.vect(), lv_3alpha_cm_alpha3.vect());
+  reaction_data.e_alpha1_cm = reaction_data.e_3alpha_cm_alpha1;
+  reaction_data.e_alpha2_cm = reaction_data.e_3alpha_cm_alpha2;
+  reaction_data.e_alpha3_cm = reaction_data.e_3alpha_cm_alpha3;
+  reaction_data.e_8be_excitation = ex_8be_pair23;
+  reaction_data.ex_8Be = ex_8be_pair23;
+  reaction_data.e_8Be = lv_lab_pair23.e() - m_pair23;
+  reaction_data.theta_lab_8Be = lv_lab_pair23.theta();
+  reaction_data.phi_lab_8Be = lv_lab_pair23.phi();
+  reaction_data.event_weight = ReactionChannelEventWeight(reaction_channel, selected_components);
+  reaction_data.event_sampling_weight = reaction_data.event_weight;
+
+  G4ThreeVector reaction_position;
+  auto event_manager = G4EventManager::GetEventManager();
+  auto tracking_manager = event_manager ? event_manager->GetTrackingManager() : nullptr;
+  auto current_track = tracking_manager ? tracking_manager->GetTrack() : nullptr;
+  if (current_track) {
+    reaction_position = current_track->GetPosition();
+  }
+
+  reaction_data.x = reaction_position.x();
+  reaction_data.y = reaction_position.y();
+  reaction_data.z = reaction_position.z();
+  FillCrossSectionDiagnostics(reaction_data, selected_components);
+  FillRuntimeConfigDiagnostics(reaction_data);
+
+  reaction_data.h11b162_decay_model_used=static_cast<G4int>(model);
+  reaction_data.h11b162_labels_are_bookkeeping=bookkeeping ? 1 : 0;
+  reaction_data.h11b162_bose_sampling_attempts=sample.attempts;
+  reaction_data.h11b162_bose_incoherent_weight=sample.weights.incoherent;
+  reaction_data.h11b162_bose_coherent_weight=sample.weights.coherent;
+  reaction_data.h11b162_bose_acceptance=sample.weights.acceptance;
+  std::snprintf(reaction_data.reaction,sizeof(reaction_data.reaction),"p11B_162_%s",H11BConfig::Get162AlphaDecayModelName());
+  auto run_action=static_cast<RunAction*>(const_cast<G4UserRunAction*>(G4RunManager::GetRunManager()->GetUserRunAction()));
+  run_action->GetRootIO()->FillReactionTree(reaction_data);
+}
+
 void H11BReaction::Generate675SymmetrizedCoherent3Alpha(const G4HadProjectile& projectile,
                                                         G4ParticleDefinition* target,
                                                         G4ParticleDefinition* product1,

@@ -43,6 +43,19 @@ enum class H11B675AlphaDecayModel
   SymmetrizedCoherentL1L3 = 1
 };
 
+// Opt-in controls for the 162-keV alpha1 branch. These BW-based amplitudes
+// isolate three-pair Bose interference; they are not full Laursen M4.
+enum class H11B162AlphaDecayModel
+{
+  LegacyLegendreA2A4 = 0,
+  SinglePathL2BW = 1,
+  IncoherentL2BW = 2,
+  BoseSymmetricL2BW = 3
+};
+constexpr auto H11BDefault162AlphaDecayModel = H11B162AlphaDecayModel::LegacyLegendreA2A4;
+constexpr G4int H11B162BoseDefaultRadialBins = 1024;
+constexpr G4int H11B162BoseDefaultMaxAttempts = 100000;
+
 
 enum class DetectorGeometryMode
 {

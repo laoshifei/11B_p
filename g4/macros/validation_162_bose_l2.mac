@@ -1,0 +1,38 @@
+# Opt-in pure alpha1 validation. Not a complete Laursen M4 implementation.
+# Set HB_DATA_DIR to a test directory before invoking HB; no batch.sh needed.
+/beam/profile point
+/beam/offsetX 0 mm
+/beam/offsetY 0 mm
+/target/material Enriched_B11
+/target/thickness 0.12 um
+/target/backing false
+/virtualSphere/enabled false
+/run/initialize
+/control/verbose 1
+/run/verbose 1
+/event/verbose 0
+/tracking/verbose 0
+/gun/particle proton
+/gun/energy 162 keV
+/output/saveReaction true
+/output/saveEvent false
+/output/saveVirtualSphere false
+/h11b/crossSectionBiasFactor 100000000000
+/h11b/162BWScaleFactor 1
+/h11b/675ScaleFactor 0
+/h11b/enable162GammaCapture false
+/h11b/enable675GammaCapture false
+/h11b/enableDirectDecay false
+/h11b/162SequentialDecayFraction 1
+/h11b/162Alpha0BranchingFraction 0
+/h11b/enable162PrimaryAngularDistribution true
+/h11b/162PrimaryAngularA1 0
+/h11b/162PrimaryAngularA2 0
+# Alternatives: legacyLegendreA2A4, singlePathL2BW, incoherentL2BW.
+/h11b/162AlphaDecayModel boseSymmetricL2BW
+/h11b/162BoseRadialBins 1024
+/h11b/162BoseMaxAttempts 100000
+/h11b/printConfig
+/output/printConfig
+/target/printConfig
+/run/beamOn 3000

@@ -60,7 +60,7 @@ G4bool H11BTrackInformation::DecodeCreatorModelTag(
   if (channel_value < static_cast<G4int>(H11BReactionChannel::Seq162BeGround)
       || channel_value > static_cast<G4int>(H11BReactionChannel::Gamma675)
       || role_value < static_cast<G4int>(H11BParticleRole::Unknown)
-      || role_value > static_cast<G4int>(H11BParticleRole::CascadeGamma)
+      || role_value > static_cast<G4int>(H11BParticleRole::SymmetricSequentialAlpha)
       || index_value < -1 || index_value > 2)
     return false;
 

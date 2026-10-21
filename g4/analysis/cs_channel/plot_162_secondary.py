@@ -85,8 +85,12 @@ def plot_162_secondary(filename, save=False, frame="lab"):
               "alpha2_role", "alpha3_role",
               "branch_id", "resonance_id"]
 
-    with uproot.open(filename) as f:
-        a = f["reaction"].arrays(fields, library="np")
+    with uproot.open(filename, handler=uproot.source.file.MemmapSource) as f:
+        tree = f["reaction"]
+        if "h11b162_labels_are_bookkeeping" in tree:
+            if np.any(tree["h11b162_labels_are_bookkeeping"].array(library="np")):
+                raise ValueError("Symmetric 162 samples have no unique secondary pair; use all three pairs or permutation-invariant observables.")
+        a = tree.arrays(fields, library="np")
 
     is162 = a["resonance_id"] == 162
 

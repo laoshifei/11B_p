@@ -84,6 +84,9 @@ void RootIO::OpenDataFile()
   virtual_sphere_enabled = VirtualSphereConfig::GetEnabled() ? 1 : 0;
   configured_162_alpha0_branching_fraction = H11BConfig::Get162Alpha0BranchingFraction();
   configured_162_alpha1_branching_fraction = 1.0 - configured_162_alpha0_branching_fraction;
+  configured_162_alpha_decay_model = static_cast<G4int>(H11BConfig::Get162AlphaDecayModel());
+  configured_162_bose_radial_bins = H11BConfig::Get162BoseRadialBins();
+  configured_162_bose_max_attempts = H11BConfig::Get162BoseMaxAttempts();
   virtual_sphere_radius_mm = VirtualSphereConfig::GetRadius() / mm;
   virtual_sphere_thickness_um = VirtualSphereConfig::GetThickness() / um;
   virtual_sphere_save_electrons = VirtualSphereConfig::GetSaveElectrons() ? 1 : 0;
@@ -93,6 +96,12 @@ void RootIO::OpenDataFile()
   run_info_tree = new TTree("RunInfo", "run information");
   run_info_tree->Branch("random_seed", &random_seed, "random_seed/l");
   run_info_tree->Branch("output_schema_version", &output_schema_version, "output_schema_version/I");
+  run_info_tree->Branch("configured_162_alpha_decay_model", &configured_162_alpha_decay_model,
+                       "configured_162_alpha_decay_model/I");
+  run_info_tree->Branch("configured_162_bose_radial_bins", &configured_162_bose_radial_bins,
+                       "configured_162_bose_radial_bins/I");
+  run_info_tree->Branch("configured_162_bose_max_attempts", &configured_162_bose_max_attempts,
+                       "configured_162_bose_max_attempts/I");
   run_info_tree->Branch("configured_162_alpha0_branching_fraction",
                         &configured_162_alpha0_branching_fraction,
                         "configured_162_alpha0_branching_fraction/D");
@@ -222,6 +231,14 @@ void RootIO::CreateReactionTree()
   reaction_tree->Branch("a2_675_primary", &reaction_data.a2_675_primary, "a2_675_primary/D");
   reaction_tree->Branch("primary_a1_used", &reaction_data.primary_a1_used, "primary_a1_used/D");
   reaction_tree->Branch("primary_a2_used", &reaction_data.primary_a2_used, "primary_a2_used/D");
+  reaction_tree->Branch("h11b162_alpha_decay_model", &reaction_data.h11b162_alpha_decay_model, "h11b162_alpha_decay_model/I");
+  reaction_tree->Branch("h11b162_decay_model_used", &reaction_data.h11b162_decay_model_used, "h11b162_decay_model_used/I");
+  reaction_tree->Branch("h11b162_labels_are_bookkeeping", &reaction_data.h11b162_labels_are_bookkeeping, "h11b162_labels_are_bookkeeping/I");
+  reaction_tree->Branch("h11b162_bose_radial_bins", &reaction_data.h11b162_bose_radial_bins, "h11b162_bose_radial_bins/I");
+  reaction_tree->Branch("h11b162_bose_sampling_attempts", &reaction_data.h11b162_bose_sampling_attempts, "h11b162_bose_sampling_attempts/I");
+  reaction_tree->Branch("h11b162_bose_incoherent_weight", &reaction_data.h11b162_bose_incoherent_weight, "h11b162_bose_incoherent_weight/D");
+  reaction_tree->Branch("h11b162_bose_coherent_weight", &reaction_data.h11b162_bose_coherent_weight, "h11b162_bose_coherent_weight/D");
+  reaction_tree->Branch("h11b162_bose_acceptance", &reaction_data.h11b162_bose_acceptance, "h11b162_bose_acceptance/D");
   reaction_tree->Branch("h11b675_decay_model", &reaction_data.h11b675_decay_model, "h11b675_decay_model/I");
   reaction_tree->Branch("h11b675_decay_model_used", &reaction_data.h11b675_decay_model_used, "h11b675_decay_model_used/I");
   reaction_tree->Branch("enable_675_alpha1_secondary_angular_correlation", &reaction_data.enable_675_alpha1_secondary_angular_correlation, "enable_675_alpha1_secondary_angular_correlation/I");
