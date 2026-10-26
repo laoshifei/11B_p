@@ -1,0 +1,50 @@
+# Common, current-source input for the 162-keV model-mismatch study.
+# The runner changes only the pure channel/model and declared beamOn budget.
+# Explicitly unpolarized: permits the controlled L2 BW amplitudes.
+# These biased samples describe conditional shapes, not absolute yields.
+/virtualSphere/enabled true
+/virtualSphere/radius 25 mm
+/virtualSphere/thickness 1 um
+/virtualSphere/saveElectrons false
+/virtualSphere/saveOpticalPhotons false
+/virtualSphere/minKineticEnergy 0 keV
+/beam/profile point
+/beam/offsetX 0 mm
+/beam/offsetY 0 mm
+/beam/z 0 mm
+/target/material Enriched_B11
+/target/thickness 0.12 um
+/target/backing false
+/run/initialize
+/control/verbose 1
+/run/verbose 1
+/event/verbose 0
+/tracking/verbose 0
+/gun/particle proton
+/gun/energy 162 keV
+/output/saveReaction true
+/output/saveEvent false
+/output/saveVirtualSphere true
+/h11b/crossSectionBiasFactor 100000000000
+/h11b/162BWScaleFactor 1
+/h11b/675ScaleFactor 0
+/h11b/enable162GammaCapture false
+/h11b/enable675GammaCapture false
+/h11b/enableDirectDecay false
+/h11b/162SequentialDecayFraction 1
+/h11b/162Alpha0BranchingFraction 0
+/h11b/enable162PrimaryAngularDistribution true
+/h11b/162PrimaryAngularA1 0
+/h11b/162PrimaryAngularA2 0
+/h11b/enable162Alpha1SecondaryAngularCorrelation true
+/h11b/162Alpha1SecondaryA2 -0.489
+/h11b/162Alpha1SecondaryA4 0.647
+/h11b/162AlphaDecayModel boseSymmetricL2BW
+/h11b/162BoseRadialBins 1024
+/h11b/162BoseMaxAttempts 100000
+/virtualSphere/printConfig
+/beam/printConfig
+/target/printConfig
+/output/printConfig
+/h11b/printConfig
+/run/beamOn 100000

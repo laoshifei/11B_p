@@ -47,3 +47,8 @@ target_link_libraries(HB ${Geant4_LIBRARIES} ${ROOT_LIBRARIES})
 add_executable(validate_162_bose EXCLUDE_FROM_ALL
   validation/validate_162_bose_driver.cc src/H11B162BoseModel.cc
   src/CoulombPenetrability.cc src/CoulombPenetrabilityData.cc)
+
+# Explicit analysis helper: material stopping powers, no reaction events.
+add_executable(export_162_stopping_power EXCLUDE_FROM_ALL
+  validation/export_162_stopping_power.cc)
+target_link_libraries(export_162_stopping_power Geant4::G4physicslists)
