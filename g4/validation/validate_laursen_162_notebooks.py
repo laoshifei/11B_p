@@ -25,10 +25,20 @@ READOUT_REVISION='codex_laursen_readout_revision'
 THESIS_REVISION='codex_laursen_thesis_revision'
 MATCHING_REVISION='codex_laursen_matching_revision'
 ENERGY_REVISION='codex_laursen_energy_revision'
+DECOMPOSITION_REVISION='codex_laursen_decomposition_revision'
+MATERIAL_REVISION='codex_laursen_material_revision'
+PIXEL_REVISION='codex_laursen_pixel_revision'
+TOPOLOGY_REVISION='codex_laursen_topology_revision'
+CLUSTER_REVISION='codex_laursen_cluster_revision'
 FIGURES={'laursen162-geometry':9,'laursen162-efficiency':10,'laursen162-dalitz':11,
          'laursen162-spectrum':12,'laursen162-sensitivity':13,'laursen162-thesis-figure':14,
          'laursen162-matching-efficiency':15,'laursen162-matching-spectrum':16,
-         'laursen162-energy-residuals':17,'laursen162-energy-windows':18}
+         'laursen162-energy-residuals':17,'laursen162-energy-windows':18,
+         'laursen162-decomposition-controls':19,'laursen162-decomposition-components':20,
+         'laursen162-material-layers':21,'laursen162-material-angles':22,
+         'laursen162-pixel-acceptance':23,'laursen162-pixel-cohort':24,
+         'laursen162-topology-residuals':25,'laursen162-topology-controls':26,
+         'laursen162-cluster-acceptance':27,'laursen162-cluster-cohort':28}
 
 
 def phase_spec(phase,number):
@@ -39,6 +49,11 @@ def phase_spec(phase,number):
     if phase=='thesis':return THESIS_REVISION,'thesis_',2 if number==2 else 1,1 if number==2 else 0
     if phase=='matching':return MATCHING_REVISION,'matching_',3 if number==2 else 1,2 if number==2 else 0
     if phase=='energy':return ENERGY_REVISION,'energy_',3 if number==2 else 1,2 if number==2 else 0
+    if phase=='decomposition':return DECOMPOSITION_REVISION,'decomposition_',3 if number==2 else 1,2 if number==2 else 0
+    if phase=='material':return MATERIAL_REVISION,'material_',3 if number==2 else 1,2 if number==2 else 0
+    if phase=='pixel':return PIXEL_REVISION,'pixel_',3 if number==2 else 1,2 if number==2 else 0
+    if phase=='topology':return TOPOLOGY_REVISION,'topology_',3 if number==2 else 1,2 if number==2 else 0
+    if phase=='cluster':return CLUSTER_REVISION,'cluster_',3 if number==2 else 1,2 if number==2 else 0
     raise ValueError('Unknown validation phase')
 
 
@@ -63,6 +78,31 @@ def check_history(document,baseline,revision=REVISION):
     for key,value in previous['metadata'].items():
         if document['metadata'][key]!=value:raise ValueError(f'Historical metadata changed: {key}')
     return len(previous['cells'])
+
+
+def write_verified(path,raw,expected_current_sha=None):
+    """Avoid oversized shared-filesystem writes; verify before atomic replace."""
+    path=Path(path);pending=path.with_suffix('.pending.ipynb')
+    expected=hashlib.sha256(raw).hexdigest()
+    view=memoryview(raw)
+    with pending.open('wb',buffering=0) as stream:
+        offset=0
+        while offset<len(view):
+            # The shared-folder driver can misreport writes at 1 MiB. Keep
+            # transfers within 64 KiB and still verify the complete byte stream.
+            chunk=view[offset:offset+65536]
+            count=stream.write(chunk)
+            if count is None or not 0<count<=len(chunk):
+                raise OSError('Invalid notebook write length; original file preserved')
+            offset+=count
+    with pending.open('rb') as stream:
+        if hashlib.file_digest(stream,'sha256').hexdigest()!=expected:
+            raise OSError('Notebook write checksum mismatch; original file preserved')
+    if expected_current_sha is not None:
+        with path.open('rb') as stream:
+            if hashlib.file_digest(stream,'sha256').hexdigest()!=expected_current_sha:
+                raise ValueError('Notebook changed during output writing; reconcile before applying')
+    pending.replace(path)
 
 
 def stage(number,scratch=SCRATCH,phase='response'):
@@ -104,9 +144,7 @@ def stage(number,scratch=SCRATCH,phase='response'):
     document['metadata'][revision]['kernel_validation']=audit
     nbformat.validate(document)
     staged=scratch/f'validated_{prefix}{number:04d}.ipynb'
-    pending=staged.with_suffix('.pending.ipynb')
-    pending.write_text(json.dumps(document,ensure_ascii=False,indent=1,allow_nan=False)+'\n')
-    pending.replace(staged)
+    write_verified(staged,(json.dumps(document,ensure_ascii=False,indent=1,allow_nan=False)+'\n').encode('utf-8'))
     print(text,flush=True)
     print(json.dumps(audit,ensure_ascii=False,indent=2),flush=True)
     return staged
@@ -124,7 +162,7 @@ def apply(staged,phase='response'):
     if hashlib.sha256(path.read_bytes()).hexdigest()!=audit['input_notebook_sha256']:
         raise ValueError('Notebook changed since validation; reconcile before applying')
     nbformat.validate(document)
-    pending=path.with_suffix('.pending.ipynb');pending.write_bytes(raw);pending.replace(path)
+    write_verified(path,raw,audit['input_notebook_sha256'])
     print(f'Applied validated outputs to {path.name}',flush=True)
 
 
@@ -134,7 +172,7 @@ if __name__=='__main__':
     task.add_argument('--number',type=int,choices=[1,2,3])
     task.add_argument('--apply-staged',type=Path)
     parser.add_argument('--scratch',type=Path,default=SCRATCH)
-    parser.add_argument('--phase',choices=['response','readout','thesis','matching','energy'],default='response')
+    parser.add_argument('--phase',choices=['response','readout','thesis','matching','energy','decomposition','material','pixel','topology','cluster'],default='response')
     args=parser.parse_args()
     if args.apply_staged:apply(args.apply_staged,args.phase)
     else:stage(args.number,args.scratch,args.phase)
