@@ -63,7 +63,9 @@ Laursen 数据组 9 的条件响应对照位于 `g4/analysis/efficiency/laursen_
 
 学位论文方法的补充检验位于 `g4/analysis/efficiency/laursen_162_selection_audit.py`，结果在 0002 第 5.9 节、图 14。它补入带版本标记的组 9 效率和相对能分类门，对显式探测器平面方程、共面性编号、硬阈值及附加选择作九组控制；保留旧响应结果。最高能共面性规则及通道分类通过存储置换检查，但完整条带匹配仍未实现，九组条件未同时复现外部效率。下一项是实验版本的完整几何、逐条带标定、匹配及生成/观测计数的逐阶段核对。测试入口为 `g4/validation/test_laursen_162_selection_audit.py`，实际内核验证用 `--number 1|2|3 --phase thesis`；导入及绘图只读缓存，显式重放需要已核指纹的学位论文 PDF 和本地反应库。
 
-条带信号匹配控制位于 `g4/analysis/efficiency/laursen_162_strip_matching.py`，全样本入口为 `laursen_162_matching_study.py`，结果在 0002 第 5.10 节、图 15–16。匹配只使用条带编号与标定能量，分别检验求和优先、共享优先和拒绝歧义；七组控制保存重数迁移、通道混淆和 D1 能谱。理想电荷共享被误解为两颗粒子时可产生虚假的基态识别，不能用真值配对或公共效率系数代替该过程。此为独立算法控制，历史作者匹配与硬件标定仍未取得，外部效率尚未同时复现。当前没有额外重建总能量/激发能窗，后续先检查错误匹配的能量闭合，再核对完整接受规则。测试为 `test_laursen_162_strip_matching.py` 和 `test_laursen_162_matching_study.py`；实际内核验证使用 `--number 1|2|3 --phase matching`。默认读取本地缓存，显式 `--output` 才计算并拒绝覆盖完成结果。
+条带信号匹配控制位于 `g4/analysis/efficiency/laursen_162_strip_matching.py`，全样本入口为 `laursen_162_matching_study.py`，结果在 0002 第 5.10 节、图 15–16。匹配只使用条带编号与标定能量，分别检验求和优先、共享优先和拒绝歧义；七组控制保存重数迁移、通道混淆和 D1 能谱。理想电荷共享被误解为两颗粒子时可产生虚假的基态识别，不能用真值配对或公共效率系数代替该过程。此为独立算法控制，历史作者匹配与硬件标定仍未取得，外部效率尚未同时复现。这一版没有额外重建总能量/激发能窗；新增能量检验见下段，完整实验接受规则仍待核对。测试为 `test_laursen_162_strip_matching.py` 和 `test_laursen_162_matching_study.py`；实际内核验证使用 `--number 1|2|3 --phase matching`。默认读取本地缓存，显式 `--output` 才计算并拒绝覆盖完成结果。
+
+能量守恒的后续检验位于 `g4/analysis/efficiency/laursen_162_energy_closure.py`，结果追加在 0002 第 5.11 节、图 17–18。它复用相同反应与条带噪声，在固定束流输入下独立检查重建能量，并将逐事件已知母态保留为诊断对照；真值信号来源只用于事后分组。100–800 keV 半窗宽及 ±90 keV 参考偏移属于声明的敏感性控制，不能当作作者原始能量窗或实验标定。输出包括误识别、真实通道损失、来源分组和配对积分误差；能量闭合本身不能证明粒子配对正确。测试入口为 `test_laursen_162_energy_closure.py`，实际内核验证使用 `--number 1|2|3 --phase energy`；导入与绘图只读缓存，显式 `--output` 才重放并拒绝覆盖结果。
 
 675 keV 的 100 万入射样本保存在本地 `g4/data/spectrum_675_lab_coherent_L1L3_1M_20261020.root`。只读全样本验证入口为 `g4/validation/validate_675_generator.py`；运行条件、种子、验证结果和图 12 集中记录在 0001 的第 3.3 节，原 100 事件回归记录保留在第 3.2 节。
 

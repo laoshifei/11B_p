@@ -24,9 +24,11 @@ REVISION='codex_laursen_notebook_revision'
 READOUT_REVISION='codex_laursen_readout_revision'
 THESIS_REVISION='codex_laursen_thesis_revision'
 MATCHING_REVISION='codex_laursen_matching_revision'
+ENERGY_REVISION='codex_laursen_energy_revision'
 FIGURES={'laursen162-geometry':9,'laursen162-efficiency':10,'laursen162-dalitz':11,
          'laursen162-spectrum':12,'laursen162-sensitivity':13,'laursen162-thesis-figure':14,
-         'laursen162-matching-efficiency':15,'laursen162-matching-spectrum':16}
+         'laursen162-matching-efficiency':15,'laursen162-matching-spectrum':16,
+         'laursen162-energy-residuals':17,'laursen162-energy-windows':18}
 
 
 def phase_spec(phase,number):
@@ -36,6 +38,7 @@ def phase_spec(phase,number):
         return READOUT_REVISION,'readout_',1,0
     if phase=='thesis':return THESIS_REVISION,'thesis_',2 if number==2 else 1,1 if number==2 else 0
     if phase=='matching':return MATCHING_REVISION,'matching_',3 if number==2 else 1,2 if number==2 else 0
+    if phase=='energy':return ENERGY_REVISION,'energy_',3 if number==2 else 1,2 if number==2 else 0
     raise ValueError('Unknown validation phase')
 
 
@@ -131,7 +134,7 @@ if __name__=='__main__':
     task.add_argument('--number',type=int,choices=[1,2,3])
     task.add_argument('--apply-staged',type=Path)
     parser.add_argument('--scratch',type=Path,default=SCRATCH)
-    parser.add_argument('--phase',choices=['response','readout','thesis','matching'],default='response')
+    parser.add_argument('--phase',choices=['response','readout','thesis','matching','energy'],default='response')
     args=parser.parse_args()
     if args.apply_staged:apply(args.apply_staged,args.phase)
     else:stage(args.number,args.scratch,args.phase)
