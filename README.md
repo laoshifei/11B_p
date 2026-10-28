@@ -77,6 +77,8 @@ Laursen 数据组 9 的条件响应对照位于 `g4/analysis/efficiency/laursen_
 
 共用条带的双命中材料响应原型位于 `g4/analysis/efficiency/laursen_162_cluster_posterior.py`，计算入口为 `laursen_162_cluster_study.py`，结果在 0002 第 5.16 节、图 27–28。它先从完整参考提取尚未通过运动学切选的观测事件池，再处理政策一致、信号支持完整的双命中共条带事件；每个物理条带的脉冲只进入一次联合似然。积分包括共同束斑位置和深度、两颗粒子的像素位置、相关电荷及未触发邻条带，使用声明的单粒子先验乘积，保留名义动量方向。全样本接受率与固定原事件组残差通过逐事件差值更新，未处理事件的权重仍保留。该原型不决定竞争拓扑的概率，也未校准真实硬件或弱分支。显式 `--extract-pool 路径` 提取事件池，`--pool 路径 --output 路径 --workers 4` 才运行积分；提取时沿用上述 GSL 环境，积分要求两个数学线程变量均为 1。两个入口在输出旁的 `.progress/` 保存带校验和的检查点；重复相同命令会核对输入、计划与源码后续算，积分可用 `--max-clusters 128` 分批。同一检查点只允许一个写入进程，已完成的结果文件仍拒绝覆盖。测试入口为 `test_laursen_162_cluster_posterior.py`、`test_laursen_162_cluster_study.py`，实际内核验证使用 `--number 1|2|3 --phase cluster`。
 
+共享条带的上限裁剪对照与积分差异传播位于 `g4/analysis/efficiency/laursen_162_cluster_controls.py`，结果在 0002 第 5.17 节、图 29–30。它只在相同合格簇上将原能量裁剪到名义方向的单 α 上限，与冻结的四种联合积分逐事件比较；完整生成分母、固定原事件组及未处理事件继续保留，联合积分相对裁剪的差值单独计算配对标准误。裁剪是估计器对照，不能隔离截断先验在几何积分中的全部作用；整体指标的控制极差也不是单事件收敛证明。导入和绘图只读缓存，显式 `--cluster-cache 路径 --output 路径` 才执行对照，拒绝覆盖完成结果，不重跑反应或几何积分。测试为 `test_laursen_162_cluster_controls.py`，实际内核验证使用 `--number 1|2|3 --phase cluster_controls`。
+
 675 keV 的 100 万入射样本保存在本地 `g4/data/spectrum_675_lab_coherent_L1L3_1M_20261020.root`。只读全样本验证入口为 `g4/validation/validate_675_generator.py`；运行条件、种子、验证结果和图 12 集中记录在 0001 的第 3.3 节，原 100 事件回归记录保留在第 3.2 节。
 
 ## 编译与运行

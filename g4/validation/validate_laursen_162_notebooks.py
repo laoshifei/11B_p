@@ -30,6 +30,7 @@ MATERIAL_REVISION='codex_laursen_material_revision'
 PIXEL_REVISION='codex_laursen_pixel_revision'
 TOPOLOGY_REVISION='codex_laursen_topology_revision'
 CLUSTER_REVISION='codex_laursen_cluster_revision'
+CLUSTER_CONTROLS_REVISION='codex_laursen_cluster_controls_revision'
 FIGURES={'laursen162-geometry':9,'laursen162-efficiency':10,'laursen162-dalitz':11,
          'laursen162-spectrum':12,'laursen162-sensitivity':13,'laursen162-thesis-figure':14,
          'laursen162-matching-efficiency':15,'laursen162-matching-spectrum':16,
@@ -38,7 +39,8 @@ FIGURES={'laursen162-geometry':9,'laursen162-efficiency':10,'laursen162-dalitz':
          'laursen162-material-layers':21,'laursen162-material-angles':22,
          'laursen162-pixel-acceptance':23,'laursen162-pixel-cohort':24,
          'laursen162-topology-residuals':25,'laursen162-topology-controls':26,
-         'laursen162-cluster-acceptance':27,'laursen162-cluster-cohort':28}
+         'laursen162-cluster-acceptance':27,'laursen162-cluster-cohort':28,
+         'laursen162-cluster-controls-ablation':29,'laursen162-cluster-controls-numerical':30}
 
 
 def phase_spec(phase,number):
@@ -54,6 +56,7 @@ def phase_spec(phase,number):
     if phase=='pixel':return PIXEL_REVISION,'pixel_',3 if number==2 else 1,2 if number==2 else 0
     if phase=='topology':return TOPOLOGY_REVISION,'topology_',3 if number==2 else 1,2 if number==2 else 0
     if phase=='cluster':return CLUSTER_REVISION,'cluster_',3 if number==2 else 1,2 if number==2 else 0
+    if phase=='cluster_controls':return CLUSTER_CONTROLS_REVISION,'cluster_controls_',3 if number==2 else 1,2 if number==2 else 0
     raise ValueError('Unknown validation phase')
 
 
@@ -172,7 +175,7 @@ if __name__=='__main__':
     task.add_argument('--number',type=int,choices=[1,2,3])
     task.add_argument('--apply-staged',type=Path)
     parser.add_argument('--scratch',type=Path,default=SCRATCH)
-    parser.add_argument('--phase',choices=['response','readout','thesis','matching','energy','decomposition','material','pixel','topology','cluster'],default='response')
+    parser.add_argument('--phase',choices=['response','readout','thesis','matching','energy','decomposition','material','pixel','topology','cluster','cluster_controls'],default='response')
     args=parser.parse_args()
     if args.apply_staged:apply(args.apply_staged,args.phase)
     else:stage(args.number,args.scratch,args.phase)
